@@ -110,6 +110,7 @@ func runConsole() {
 
 	editor := readline.NewEditor()
 	editor.SetPrompt(consolePrompt())
+	editor.EnableAutoSuggestion(false)
 	if homeDir, err := os.UserHomeDir(); err == nil {
 		editor.SetHistoryFile(homeDir + "/.gocat_console_history")
 	}

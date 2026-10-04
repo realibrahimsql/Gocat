@@ -932,8 +932,9 @@ func handleNormal(conn net.Conn) error {
 		editor.SetHistoryFile(homeDir + "/.gocat_history")
 	}
 
-	// Enable advanced features
-	editor.EnableAutoSuggestion(true)                            // Fish-like auto-suggestions
+	// Enable advanced features (no autosuggest: ghost text is never
+	// submitted on Enter, so it misleads more than it helps)
+	editor.EnableAutoSuggestion(false)
 	editor.EnableBracketMatching(true)                           // Highlight matching brackets
 	editor.SetIgnoreCase(true)                                   // Case-insensitive completion
 	editor.SetSyntaxHighlighter(readline.ShellSyntaxHighlighter) // Syntax highlighting
@@ -1135,6 +1136,7 @@ func handleInteractive(conn net.Conn) error {
 	// Create readline editor for local input
 	editor := readline.NewEditor()
 	editor.SetPrompt("") // No visible prompt in PTY mode
+	editor.EnableAutoSuggestion(false)
 
 	// Set history file for interactive mode
 	if homeDir, err := os.UserHomeDir(); err == nil {
