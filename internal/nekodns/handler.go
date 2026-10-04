@@ -29,14 +29,16 @@ func NewHandler() *Handler {
 // working tree: absolute paths and ".." escapes are refused.
 func sanitizeDNSDownloadPath(p string) string {
 	p = strings.TrimSpace(p)
-	if p == "" || filepath.IsAbs(p) {
+	// Remote paths use Unix semantics on every host OS: a leading slash
+	// is absolute even where filepath.IsAbs disagrees (Windows).
+	if p == "" || strings.HasPrefix(p, "/") || filepath.IsAbs(p) {
 		return ""
 	}
 	clean := filepath.Clean(p)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return ""
 	}
-	return clean
+	return filepath.ToSlash(clean)
 }
 
 // HandleAQuery handles 'a' type DNS queries (command polling)

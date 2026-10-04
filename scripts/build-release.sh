@@ -61,7 +61,9 @@ if command -v dpkg-deb >/dev/null 2>&1; then
 fi
 
 if command -v rpmbuild >/dev/null 2>&1; then
-  rpm_arches=("amd64:x86_64" "arm64:aarch64")
+  # Native-arch RPM only: rpmbuild rejects cross --target without an
+  # arch-configured toolchain. ARM users get tarballs/deb.
+  rpm_arches=("amd64:x86_64")
   for arch_pair in "${rpm_arches[@]}"; do
     goarch="${arch_pair%%:*}"
     rpmarch="${arch_pair##*:}"
@@ -104,137 +106,6 @@ SPEC
   done
 fi
 
-if command -v rpmbuild >/dev/null 2>&1; then
-  rpm_arches=("amd64:x86_64" "arm64:aarch64")
-  for arch_pair in "${rpm_arches[@]}"; do
-    goarch="${arch_pair%%:*}"
-    rpmarch="${arch_pair##*:}"
-    rpm_stage="$dist_dir/rpm-stage-$goarch"
-    rm -rf "$rpm_stage"
-    mkdir -p "$rpm_stage/usr/local/bin" "$rpm_stage/usr/share/doc/gocat"
-    tar -C "$dist_dir" -xzf "$release_dir/gocat-${version}-linux-${goarch}.tar.gz"
-    cp "$dist_dir/gocat-${version}-linux-${goarch}/gocat" "$rpm_stage/usr/local/bin/gocat"
-    chmod 0755 "$rpm_stage/usr/local/bin/gocat"
-    cp "$root_dir/README.md" "$root_dir/LICENSE" "$rpm_stage/usr/share/doc/gocat/"
-    rm -rf "$dist_dir/gocat-${version}-linux-${goarch}"
-    rpm_topdir="$dist_dir/rpmbuild-$goarch"
-    rm -rf "$rpm_topdir"
-    mkdir -p "$rpm_topdir"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-    cat > "$rpm_topdir/SPECS/gocat.spec" <<SPEC
-Name:           gocat
-Version:        $package_version
-Release:        1%{?dist}
-Summary:        Modern netcat alternative written in Go
-License:        Apache-2.0
-BuildArch:      $rpmarch
-
-%description
-GoCat is a cross-platform netcat alternative with sessions,
-an interactive console, and post-exploitation helper modules.
-
-%install
-mkdir -p %{buildroot}/usr/local/bin %{buildroot}/usr/share/doc/gocat
-cp $rpm_stage/usr/local/bin/gocat %{buildroot}/usr/local/bin/gocat
-cp $rpm_stage/usr/share/doc/gocat/README.md $rpm_stage/usr/share/doc/gocat/LICENSE %{buildroot}/usr/share/doc/gocat/
-
-%files
-/usr/local/bin/gocat
-/usr/share/doc/gocat/README.md
-/usr/share/doc/gocat/LICENSE
-SPEC
-    rpmbuild --target "$rpmarch" --define "_topdir $rpm_topdir" -bb "$rpm_topdir/SPECS/gocat.spec"
-    cp "$rpm_topdir/RPMS/$rpmarch/"*.rpm "$release_dir/"
-    rm -rf "$rpm_stage" "$rpm_topdir"
-  done
-fi
-
-if command -v rpmbuild >/dev/null 2>&1; then
-  rpm_arches=("amd64:x86_64" "arm64:aarch64")
-  for arch_pair in "${rpm_arches[@]}"; do
-    goarch="${arch_pair%%:*}"
-    rpmarch="${arch_pair##*:}"
-    rpm_stage="$dist_dir/rpm-stage-$goarch"
-    rm -rf "$rpm_stage"
-    mkdir -p "$rpm_stage/usr/local/bin" "$rpm_stage/usr/share/doc/gocat"
-    tar -C "$dist_dir" -xzf "$release_dir/gocat-${version}-linux-${goarch}.tar.gz"
-    cp "$dist_dir/gocat-${version}-linux-${goarch}/gocat" "$rpm_stage/usr/local/bin/gocat"
-    chmod 0755 "$rpm_stage/usr/local/bin/gocat"
-    cp "$root_dir/README.md" "$root_dir/LICENSE" "$rpm_stage/usr/share/doc/gocat/"
-    rm -rf "$dist_dir/gocat-${version}-linux-${goarch}"
-    rpm_topdir="$dist_dir/rpmbuild-$goarch"
-    rm -rf "$rpm_topdir"
-    mkdir -p "$rpm_topdir"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-    cat > "$rpm_topdir/SPECS/gocat.spec" <<SPEC
-Name:           gocat
-Version:        $package_version
-Release:        1%{?dist}
-Summary:        Modern netcat alternative written in Go
-License:        Apache-2.0
-BuildArch:      $rpmarch
-
-%description
-GoCat is a cross-platform netcat alternative with sessions,
-an interactive console, and post-exploitation helper modules.
-
-%install
-mkdir -p %{buildroot}/usr/local/bin %{buildroot}/usr/share/doc/gocat
-cp $rpm_stage/usr/local/bin/gocat %{buildroot}/usr/local/bin/gocat
-cp $rpm_stage/usr/share/doc/gocat/README.md $rpm_stage/usr/share/doc/gocat/LICENSE %{buildroot}/usr/share/doc/gocat/
-
-%files
-/usr/local/bin/gocat
-/usr/share/doc/gocat/README.md
-/usr/share/doc/gocat/LICENSE
-SPEC
-    rpmbuild --target "$rpmarch" --define "_topdir $rpm_topdir" -bb "$rpm_topdir/SPECS/gocat.spec"
-    cp "$rpm_topdir/RPMS/$rpmarch/"*.rpm "$release_dir/"
-    rm -rf "$rpm_stage" "$rpm_topdir"
-  done
-fi
-
-if command -v rpmbuild >/dev/null 2>&1; then
-  rpm_arches=("amd64:x86_64" "arm64:aarch64")
-  for arch_pair in "${rpm_arches[@]}"; do
-    goarch="${arch_pair%%:*}"
-    rpmarch="${arch_pair##*:}"
-    rpm_stage="$dist_dir/rpm-stage-$goarch"
-    rm -rf "$rpm_stage"
-    mkdir -p "$rpm_stage/usr/local/bin" "$rpm_stage/usr/share/doc/gocat"
-    tar -C "$dist_dir" -xzf "$release_dir/gocat-${version}-linux-${goarch}.tar.gz"
-    cp "$dist_dir/gocat-${version}-linux-${goarch}/gocat" "$rpm_stage/usr/local/bin/gocat"
-    chmod 0755 "$rpm_stage/usr/local/bin/gocat"
-    cp "$root_dir/README.md" "$root_dir/LICENSE" "$rpm_stage/usr/share/doc/gocat/"
-    rm -rf "$dist_dir/gocat-${version}-linux-${goarch}"
-    rpm_topdir="$dist_dir/rpmbuild-$goarch"
-    rm -rf "$rpm_topdir"
-    mkdir -p "$rpm_topdir"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-    cat > "$rpm_topdir/SPECS/gocat.spec" <<SPEC
-Name:           gocat
-Version:        $package_version
-Release:        1%{?dist}
-Summary:        Modern netcat alternative written in Go
-License:        Apache-2.0
-BuildArch:      $rpmarch
-
-%description
-GoCat is a cross-platform netcat alternative with sessions,
-an interactive console, and post-exploitation helper modules.
-
-%install
-mkdir -p %{buildroot}/usr/local/bin %{buildroot}/usr/share/doc/gocat
-cp $rpm_stage/usr/local/bin/gocat %{buildroot}/usr/local/bin/gocat
-cp $rpm_stage/usr/share/doc/gocat/README.md $rpm_stage/usr/share/doc/gocat/LICENSE %{buildroot}/usr/share/doc/gocat/
-
-%files
-/usr/local/bin/gocat
-/usr/share/doc/gocat/README.md
-/usr/share/doc/gocat/LICENSE
-SPEC
-    rpmbuild --target "$rpmarch" --define "_topdir $rpm_topdir" -bb "$rpm_topdir/SPECS/gocat.spec"
-    cp "$rpm_topdir/RPMS/$rpmarch/"*.rpm "$release_dir/"
-    rm -rf "$rpm_stage" "$rpm_topdir"
-  done
-fi
 
 go list -m -json all > "$dist_dir/SBOM.modules.json"
 
