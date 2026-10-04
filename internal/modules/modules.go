@@ -242,7 +242,7 @@ func (r *Registry) registerBuiltinModules() {
 			if err != nil {
 				return fmt.Errorf("failed to upload linpeas: %w", err)
 			}
-			sess.Exec(fmt.Sprintf("chmod +x %s && %s", path, path), 0)
+			sess.Exec(fmt.Sprintf("chmod +x %s && %s", session.ShellQuote(path), session.ShellQuote(path)), 0)
 			return nil
 		},
 	})
@@ -279,7 +279,7 @@ func (r *Registry) registerBuiltinModules() {
 			if err != nil {
 				return fmt.Errorf("failed to upload lse: %w", err)
 			}
-			sess.Exec(fmt.Sprintf("chmod +x %s && %s -l 1", path, path), 0)
+			sess.Exec(fmt.Sprintf("chmod +x %s && %s -l 1", session.ShellQuote(path), session.ShellQuote(path)), 0)
 			return nil
 		},
 	})
@@ -296,7 +296,7 @@ func (r *Registry) registerBuiltinModules() {
 			if err != nil {
 				return fmt.Errorf("failed to upload les: %w", err)
 			}
-			sess.Exec(fmt.Sprintf("chmod +x %s && %s", path, path), 0)
+			sess.Exec(fmt.Sprintf("chmod +x %s && %s", session.ShellQuote(path), session.ShellQuote(path)), 0)
 			return nil
 		},
 	})
@@ -316,7 +316,7 @@ func (r *Registry) registerBuiltinModules() {
 			if err != nil {
 				return fmt.Errorf("failed to upload pspy: %w", err)
 			}
-			sess.Exec(fmt.Sprintf("chmod +x %s", path), 0)
+			sess.Exec(fmt.Sprintf("chmod +x %s", session.ShellQuote(path)), 0)
 			logger.Info("pspy uploaded to %s. Run it manually.", path)
 			return nil
 		},
@@ -357,7 +357,7 @@ func (r *Registry) registerBuiltinModules() {
 			if err != nil {
 				return err
 			}
-			sess.Exec(fmt.Sprintf("chmod +x %s && %s", path, path), 0)
+			sess.Exec(fmt.Sprintf("chmod +x %s && %s", session.ShellQuote(path), session.ShellQuote(path)), 0)
 			return nil
 		},
 	})
@@ -576,7 +576,7 @@ func (r *Registry) registerBuiltinModules() {
 			if err != nil {
 				return err
 			}
-			sess.Exec(fmt.Sprintf("chmod +x %s", path), 0)
+			sess.Exec(fmt.Sprintf("chmod +x %s", session.ShellQuote(path)), 0)
 			logger.Info("procmemdump uploaded to %s", path)
 			return nil
 		},

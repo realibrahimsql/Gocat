@@ -130,6 +130,12 @@ func (s *Server) handleTCPConnection(conn net.Conn) {
 
 // handleDNSQuery processes a DNS query
 func (s *Server) handleDNSQuery(query []byte, sendResponse func([]byte)) {
+	defer func() {
+		_ = recover()
+	}()
+	if len(query) < 12 {
+		return
+	}
 	domain := ExtractQuery(query)
 	response := s.Handler.BuildResponse(query, domain)
 	sendResponse(response)

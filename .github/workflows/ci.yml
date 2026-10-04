@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION: '1.24.x'
+  GO_VERSION: '1.25.x'
 
 jobs:
   test:
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.24.x', '1.25.x']
+        go-version: ['1.25.x']
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +87,7 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.6
+          version: latest
           args: --timeout=5m
 
   cross-compile:

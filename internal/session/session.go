@@ -951,7 +951,7 @@ func (s *Session) Download(remotePath string, localDir string) (string, error) {
 
 func (s *Session) downloadUnix(remotePath string, localDir string) (string, error) {
 	// Get file via base64
-	resp, err := s.Exec(fmt.Sprintf("base64 %s 2>/dev/null | tr -d '\\n'", remotePath), 30*time.Second)
+	resp, err := s.Exec(fmt.Sprintf("base64 %s 2>/dev/null | tr -d '\\n'", ShellQuote(remotePath)), 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed to read remote file: %w", err)
 	}
@@ -998,7 +998,7 @@ func (s *Session) Cleanup() int {
 	for path := range s.UploadedPaths {
 		var cmd string
 		if s.OS == OSUnix {
-			cmd = fmt.Sprintf(`[ -e "%s" ] && rm -rf -- "%s" && echo "OK" || echo "FAIL"`, path, path)
+			cmd = fmt.Sprintf(`[ -e %s ] && rm -rf -- %s && echo "OK" || echo "FAIL"`, ShellQuote(path), ShellQuote(path))
 		} else {
 			cmd = fmt.Sprintf(`cmd /Q /D /C if exist "%s" (del /f /q "%s" && echo OK) else (echo FAIL)`, path, path)
 		}
@@ -1018,7 +1018,7 @@ func (s *Session) Cleanup() int {
 // WriteAccess checks if the session has write access to a directory
 func (s *Session) WriteAccess(directory string) bool {
 	if s.OS == OSUnix {
-		resp, err := s.Exec(fmt.Sprintf(`[ -w "%s" ]; echo $?`, directory), 3*time.Second)
+		resp, err := s.Exec(fmt.Sprintf(`[ -w %s ]; echo $?`, ShellQuote(directory)), 3*time.Second)
 		if err != nil || strings.TrimSpace(resp) != "0" {
 			return false
 		}

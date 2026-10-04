@@ -115,6 +115,9 @@ func (h *Handler) HandleEQuery() []byte {
 
 // BuildResponse builds a DNS response
 func (h *Handler) BuildResponse(request []byte, domain string) []byte {
+	if len(request) < 12 {
+		return nil
+	}
 	// DNS Header
 	tid := request[:2]
 	flags := []byte{0x81, 0x80}
