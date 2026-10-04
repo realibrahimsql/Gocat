@@ -579,6 +579,11 @@ func handleScanPorts(ctx context.Context, args map[string]interface{}) (interfac
 	if err := ValidateArguments("scan_ports", args); err != nil {
 		return nil, err
 	}
+	if host, ok := args["host"].(string); ok {
+		if err := ValidateNetworkTarget(host); err != nil {
+			return nil, err
+		}
+	}
 
 	// Build command arguments
 	cmdArgs := BuildGoCatArgs("scan", args)

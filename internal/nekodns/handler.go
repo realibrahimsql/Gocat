@@ -25,6 +25,20 @@ func NewHandler() *Handler {
 	}
 }
 
+// sanitizeDNSDownloadPath confines DNS-tunnel downloads to the current
+// working tree: absolute paths and ".." escapes are refused.
+func sanitizeDNSDownloadPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" || filepath.IsAbs(p) {
+		return ""
+	}
+	clean := filepath.Clean(p)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return clean
+}
+
 // HandleAQuery handles 'a' type DNS queries (command polling)
 func (h *Handler) HandleAQuery(hexdata string) []byte {
 	h.ActiveCmd.Lock()
@@ -63,11 +77,20 @@ func (h *Handler) HandleSQuery() []byte {
 	return RandomResponse()
 }
 
+// maxDNSChunks caps accumulated exfil chunks (100 x ~63B labels) so a
+// flooding client cannot grow server memory without bound.
+const maxDNSChunks = 100
+
 // HandleDQuery handles 'd' type DNS queries (data chunks)
 func (h *Handler) HandleDQuery(hexdata string) []byte {
+	if len(hexdata) > 128 {
+		return RandomResponse()
+	}
 	h.Responses.Lock()
-	reversed := ReverseString(hexdata)
-	h.Responses.Chunks = append(h.Responses.Chunks, reversed)
+	if len(h.Responses.Chunks) < maxDNSChunks {
+		reversed := ReverseString(hexdata)
+		h.Responses.Chunks = append(h.Responses.Chunks, reversed)
+	}
 	h.Responses.Unlock()
 	return RandomResponse()
 }
@@ -92,10 +115,19 @@ func (h *Handler) HandleEQuery() []byte {
 			if len(parts) == 2 {
 				paths := strings.Split(parts[1], "!")
 				if len(paths) == 2 {
-					localPath := paths[1]
+					localPath := sanitizeDNSDownloadPath(paths[1])
+					if localPath == "" {
+						color.Red("[!] Refusing download with escaping path\n")
+						h.ResponseQueue <- ""
+						h.ActiveCmd.Lock()
+						h.ActiveCmd.Cmd = ""
+						h.ActiveCmd.Delivered = false
+						h.ActiveCmd.Unlock()
+						return RandomResponse()
+					}
 					dir := filepath.Dir(localPath)
-					os.MkdirAll(dir, 0755)
-					if err := os.WriteFile(localPath, data, 0644); err == nil {
+					os.MkdirAll(dir, 0o750)
+					if err := os.WriteFile(localPath, data, 0o600); err == nil {
 						color.Green("[+] File downloaded successfully to %s\n", localPath)
 						h.ResponseQueue <- ""
 						h.ActiveCmd.Lock()

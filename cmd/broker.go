@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,8 @@ var (
 	brokerClients  map[string]net.Conn
 	brokerMutex    sync.RWMutex
 	brokerMaxConns int
+	brokerHost     string
+	brokerAuth     string
 )
 
 var brokerCmd = &cobra.Command{
@@ -29,6 +33,8 @@ and relay data between them. Useful for creating a central hub for communication
 func init() {
 	rootCmd.AddCommand(brokerCmd)
 	brokerCmd.Flags().IntVarP(&brokerMaxConns, "max-conns", "m", 10, "Maximum number of concurrent connections")
+	brokerCmd.Flags().StringVar(&brokerHost, "host", "127.0.0.1", "Bind address (use 0.0.0.0 with --auth for LAN relays)")
+	brokerCmd.Flags().StringVar(&brokerAuth, "auth", "", "Require password as user:pass")
 	brokerClients = make(map[string]net.Conn)
 }
 
@@ -48,13 +54,16 @@ func runBroker(cmd *cobra.Command, args []string) {
 }
 
 func startBroker(port string) error {
-	listener, err := net.Listen("tcp", ":"+port)
+	listener, err := net.Listen("tcp", net.JoinHostPort(brokerHost, port))
 	if err != nil {
 		return fmt.Errorf("failed to start broker listener: %w", err)
 	}
 	defer listener.Close()
 
-	logger.Info("Broker listening on :%s", port)
+	if !isLoopbackAddr(brokerHost) && brokerAuth == "" {
+		logger.Warn("Broker on %s without --auth: anyone on the network can relay traffic", listener.Addr())
+	}
+	logger.Info("Broker listening on %s", listener.Addr())
 
 	for {
 		conn, err := listener.Accept()
@@ -63,26 +72,32 @@ func startBroker(port string) error {
 			continue
 		}
 
-		brokerMutex.Lock()
-		if len(brokerClients) >= brokerMaxConns {
+		brokerMutex.RLock()
+		full := len(brokerClients) >= brokerMaxConns
+		brokerMutex.RUnlock()
+		if full {
 			logger.Warn("Maximum connections reached, rejecting %s", conn.RemoteAddr())
 			if err := conn.Close(); err != nil {
 				logger.Error("Failed to close connection: %v", err)
 			}
-			brokerMutex.Unlock()
 			continue
 		}
 
 		clientID := fmt.Sprintf("%s-%d", conn.RemoteAddr().String(), time.Now().Unix())
-		brokerClients[clientID] = conn
-		brokerMutex.Unlock()
-
 		logger.Info("Client connected: %s (ID: %s)", conn.RemoteAddr(), clientID)
 		go handleBrokerClient(clientID, conn)
 	}
 }
 
 func handleBrokerClient(clientID string, conn net.Conn) {
+	if !checkBrokerAuth(conn) {
+		logger.Warn("Broker auth failed from %s", conn.RemoteAddr())
+		_ = conn.Close()
+		return
+	}
+	brokerMutex.Lock()
+	brokerClients[clientID] = conn
+	brokerMutex.Unlock()
 	defer func() {
 		brokerMutex.Lock()
 		delete(brokerClients, clientID)
@@ -104,15 +119,51 @@ func handleBrokerClient(clientID string, conn net.Conn) {
 		data := buffer[:n]
 		logger.Debug("Received %d bytes from %s", n, clientID)
 
-		// Broadcast to all other clients
+		// Snapshot under RLock, write outside the lock with deadlines so
+		// one slow client cannot stall every broadcast.
 		brokerMutex.RLock()
+		others := make(map[string]net.Conn, len(brokerClients))
 		for otherID, otherConn := range brokerClients {
 			if otherID != clientID {
-				if _, err := otherConn.Write(data); err != nil {
-					logger.Error("Failed to write to client %s: %v", otherID, err)
-				}
+				others[otherID] = otherConn
 			}
 		}
 		brokerMutex.RUnlock()
+		for otherID, otherConn := range others {
+			_ = otherConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := otherConn.Write(data); err != nil {
+				logger.Error("Failed to write to client %s: %v", otherID, err)
+				brokerMutex.Lock()
+				if c, ok := brokerClients[otherID]; ok && c == otherConn {
+					delete(brokerClients, otherID)
+					_ = otherConn.Close()
+				}
+				brokerMutex.Unlock()
+			}
+		}
 	}
+}
+
+// checkBrokerAuth gates a fresh relay client when --auth is configured.
+func checkBrokerAuth(conn net.Conn) bool {
+	if brokerAuth == "" {
+		return true
+	}
+	parts := strings.SplitN(brokerAuth, ":", 2)
+	if len(parts) != 2 {
+		logger.Error("Invalid --auth format. Use user:pass")
+		return false
+	}
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 1024), 1024)
+	if _, err := conn.Write([]byte("Password: ")); err != nil {
+		return false
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+	if !scanner.Scan() || !checkChatAuth(scanner.Text(), parts[0], parts[1]) {
+		_, _ = conn.Write([]byte("Authentication failed.\n"))
+		return false
+	}
+	return true
 }

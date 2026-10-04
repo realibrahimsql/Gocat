@@ -571,10 +571,10 @@ func IsPrivateIP(ip net.IP) bool {
 // GetSecureTLSConfig returns a secure TLS configuration with proper defaults
 func GetSecureTLSConfig() *tls.Config {
 	return &tls.Config{
-		MinVersion:               tls.VersionTLS12, // Minimum TLS 1.2
-		MaxVersion:               tls.VersionTLS13, // Allow TLS 1.3
-		InsecureSkipVerify:       false,                      // Always verify certificates by default
-		NextProtos:               []string{"h2", "http/1.1"}, // Support HTTP/2
+		MinVersion:         tls.VersionTLS12,           // Minimum TLS 1.2
+		MaxVersion:         tls.VersionTLS13,           // Allow TLS 1.3
+		InsecureSkipVerify: false,                      // Always verify certificates by default
+		NextProtos:         []string{"h2", "http/1.1"}, // Support HTTP/2
 		CipherSuites: []uint16{
 			// TLS 1.2 secure cipher suites
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,

@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,9 +61,7 @@ func NewWebSocketToHTTPConverter(listenAddr, targetURL string) (*WebSocketToHTTP
 		listenAddr: listenAddr,
 		targetURL:  targetURL,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins (can be restricted in production)
-			},
+			CheckOrigin:     createSecureOriginChecker(),
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
 		},
@@ -183,18 +184,34 @@ func (c *WebSocketToHTTPConverter) convertAndForward(message []byte, _ int) *Res
 
 	response.ID = envelope.ID
 
-	// Build target URL
-	targetURL := c.targetURL
-	if envelope.Path != "" {
-		targetURL = targetURL + envelope.Path
+	// Validate method against a fixed allowlist.
+	switch envelope.Method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete,
+		http.MethodPatch, http.MethodHead, http.MethodOptions:
+	default:
+		response.Error = fmt.Sprintf("method not allowed: %q", envelope.Method)
+		response.StatusCode = 400
+		return response
 	}
 
-	// Prepare request body
+	// Build target URL. The path must stay inside the configured target:
+	// absolute URLs, scheme-relative targets, and ".." escapes are refused.
+	targetURL, err := joinTargetPath(c.targetURL, envelope.Path)
+	if err != nil {
+		response.Error = err.Error()
+		response.StatusCode = 400
+		return response
+	}
+
+	// Prepare request body (capped at 1MB per message).
 	var bodyReader io.Reader
 	switch v := envelope.Body.(type) {
 	case string:
-		bodyReader = bytes.NewBufferString(v)
+		bodyReader = strings.NewReader(limitString(v, 1<<20))
 	case []byte:
+		if len(v) > 1<<20 {
+			v = v[:1<<20]
+		}
 		bodyReader = bytes.NewBuffer(v)
 	default:
 		// Marshal to JSON
@@ -203,6 +220,9 @@ func (c *WebSocketToHTTPConverter) convertAndForward(message []byte, _ int) *Res
 			response.Error = fmt.Sprintf("Failed to marshal body: %v", err)
 			response.StatusCode = 400
 			return response
+		}
+		if len(bodyData) > 1<<20 {
+			bodyData = bodyData[:1<<20]
 		}
 		bodyReader = bytes.NewBuffer(bodyData)
 	}
@@ -220,9 +240,16 @@ func (c *WebSocketToHTTPConverter) convertAndForward(message []byte, _ int) *Res
 	req.Header.Set("X-Forwarded-Proto", "websocket")
 	req.Header.Set("X-Original-Timestamp", envelope.Timestamp.Format(time.RFC3339))
 
-	// Add custom headers from envelope
+	// Add custom headers from envelope, except hop-by-hop and
+	// identity headers that must stay under converter control.
 	for key, value := range envelope.Headers {
-		req.Header.Set(key, value)
+		canonical := http.CanonicalHeaderKey(key)
+		switch canonical {
+		case "Host", "Content-Length", "Authorization", "Proxy-Authorization",
+			"Connection", "Transfer-Encoding", "Upgrade", "Cookie":
+			continue
+		}
+		req.Header.Set(canonical, value)
 	}
 
 	// Send HTTP request
@@ -235,8 +262,8 @@ func (c *WebSocketToHTTPConverter) convertAndForward(message []byte, _ int) *Res
 	}
 	defer httpResp.Body.Close()
 
-	// Read response body
-	bodyBytes, err := io.ReadAll(httpResp.Body)
+	// Read response body (capped at 4MB).
+	bodyBytes, err := io.ReadAll(io.LimitReader(httpResp.Body, 4<<20))
 	if err != nil {
 		response.Error = fmt.Sprintf("Failed to read response: %v", err)
 		response.StatusCode = 500
@@ -257,6 +284,37 @@ func (c *WebSocketToHTTPConverter) convertAndForward(message []byte, _ int) *Res
 	logger.Debug("HTTP response received: status=%d, body_size=%d", httpResp.StatusCode, len(bodyBytes))
 
 	return response
+}
+
+// joinTargetPath appends an envelope path to the configured target URL,
+// refusing absolute URLs and ".." escapes outside the target path.
+func joinTargetPath(target, p string) (string, error) {
+	base, err := url.Parse(target)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("invalid converter target")
+	}
+	if p == "" {
+		return target, nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("path must start with /: %q", p)
+	}
+	clean := path.Clean(p)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("path escapes target scope: %q", p)
+	}
+	ref, err := url.Parse(clean)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %q", p)
+	}
+	return base.ResolveReference(ref).String(), nil
+}
+
+func limitString(s string, max int) string {
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
 }
 
 // Stats returns converter statistics

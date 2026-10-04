@@ -170,6 +170,11 @@ func handleDNSQuery(conn *net.UDPConn, clientAddr *net.UDPAddr, query []byte) {
 
 	// Get or create session
 	session := getOrCreateSession(sessionID)
+	if session == nil {
+		logger.Warn("DNS tunnel session table full, dropping %s", sessionID)
+		sendDNSError(conn, clientAddr, query)
+		return
+	}
 
 	// Decode and process data
 	if tunnelData != "" {
@@ -323,6 +328,13 @@ func encodeTunnelData(data []byte) string {
 	}
 }
 
+// maxDNSSessions caps attacker-created tunnel sessions and maxDNSBuffer
+// caps each session buffer so query floods cannot exhaust memory.
+const (
+	maxDNSSessions = 1000
+	maxDNSBuffer   = 64 << 10
+)
+
 // getOrCreateSession returns the dnsSession for the given session ID, creating and storing a new session if none exists.
 // It also updates the session's lastActive timestamp to the current time.
 func getOrCreateSession(sessionID string) *dnsSession {
@@ -331,6 +343,9 @@ func getOrCreateSession(sessionID string) *dnsSession {
 
 	session, exists := dnsSessions.sessions[sessionID]
 	if !exists {
+		if len(dnsSessions.sessions) >= maxDNSSessions {
+			return nil
+		}
 		session = &dnsSession{
 			id:         sessionID,
 			lastActive: time.Now(),
@@ -356,9 +371,15 @@ func readTargetResponses(session *dnsSession, _ *net.UDPConn, _ *net.UDPAddr) {
 			break
 		}
 
-		// Buffer response data
+		// Buffer response data (capped; drop overflow and fail the session)
 		session.mu.Lock()
-		session.buffer = append(session.buffer, buf[:n]...)
+		if len(session.buffer) < maxDNSBuffer {
+			room := maxDNSBuffer - len(session.buffer)
+			if n > room {
+				n = room
+			}
+			session.buffer = append(session.buffer, buf[:n]...)
+		}
 		session.mu.Unlock()
 
 		logger.Debug("Buffered %d bytes from target for session %s", n, session.id)

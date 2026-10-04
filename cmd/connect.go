@@ -34,6 +34,7 @@ var (
 	proxyURL        string
 	useSSL          bool
 	verifyCert      bool
+	insecureTLS     bool
 	caCertFile      string
 	useUDP          bool
 	useSCTP         bool
@@ -83,7 +84,8 @@ func init() {
 	connectCmd.Flags().DurationVar(&backoffMax, "backoff-max", 60*time.Second, "Maximum delay for backoff")
 	connectCmd.Flags().BoolVar(&backoffJitter, "backoff-jitter", true, "Add jitter to backoff delays")
 	connectCmd.Flags().BoolVar(&keepAlive, "keep-alive", false, "Enable TCP keep-alive")
-	connectCmd.Flags().BoolVar(&verifyCert, "verify-cert", false, "Verify SSL certificate")
+	connectCmd.Flags().BoolVar(&verifyCert, "verify-cert", true, "Verify SSL certificate")
+	connectCmd.Flags().BoolVar(&insecureTLS, "insecure", false, "Disable TLS certificate verification (MITM risk)")
 	connectCmd.Flags().StringVar(&proxyURL, "proxy", "", "Proxy URL (socks5:// or http://)")
 	connectCmd.Flags().BoolVar(&useUDP, "udp", false, "Use UDP instead of TCP")
 	connectCmd.Flags().DurationVar(&timeout, "connect-timeout", timeout, "Connect timeout (deprecated; use --wait)")
@@ -131,6 +133,9 @@ func runConnect(cmd *cobra.Command, args []string) {
 	}
 	if globalSSLVerify, _ := cmd.Root().PersistentFlags().GetBool("ssl-verify"); globalSSLVerify {
 		verifyCert = true
+	}
+	if insecureTLS {
+		verifyCert = false
 	}
 	if globalSSLTrust, _ := cmd.Root().PersistentFlags().GetString("ssl-trustfile"); globalSSLTrust != "" {
 		caCertFile = globalSSLTrust
@@ -481,7 +486,7 @@ func dialWithTLS(network, address string, dialer *net.Dialer) (net.Conn, error) 
 	}
 
 	if !verifyCert {
-		logger.Warn("TLS certificate verification disabled (use --verify-cert for MITM protection)")
+		logger.Warn("TLS certificate verification disabled (--insecure): connections are MITMable")
 	}
 
 	if sslCiphers, _ := rootCmd.PersistentFlags().GetString("ssl-ciphers"); sslCiphers != "" {

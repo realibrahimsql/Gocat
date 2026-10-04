@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"strings"
@@ -18,6 +19,8 @@ var (
 	chatMutex    sync.RWMutex
 	chatMaxConns int
 	chatRoomName string
+	chatHost     string
+	chatAuth     string
 )
 
 type ChatClient struct {
@@ -39,6 +42,8 @@ func init() {
 	rootCmd.AddCommand(chatCmd)
 	chatCmd.Flags().IntVarP(&chatMaxConns, "max-conns", "m", 20, "Maximum number of concurrent chat connections")
 	chatCmd.Flags().StringVarP(&chatRoomName, "room", "r", "GoCat-Room", "Chat room name")
+	chatCmd.Flags().StringVar(&chatHost, "host", "127.0.0.1", "Bind address (use 0.0.0.0 with --auth for LAN rooms)")
+	chatCmd.Flags().StringVar(&chatAuth, "auth", "", "Require password as user:pass (strongly recommended unless loopback)")
 	chatClients = make(map[string]*ChatClient)
 }
 
@@ -58,13 +63,16 @@ func runChat(cmd *cobra.Command, args []string) {
 }
 
 func startChatServer(port string) error {
-	listener, err := net.Listen("tcp", ":"+port)
+	listener, err := net.Listen("tcp", net.JoinHostPort(chatHost, port))
 	if err != nil {
 		return fmt.Errorf("failed to start chat server: %w", err)
 	}
 	defer listener.Close()
 
-	logger.Info("Chat server '%s' listening on :%s", chatRoomName, port)
+	if !isLoopbackAddr(chatHost) && chatAuth == "" {
+		logger.Warn("Chat room on %s without --auth: anyone on the network can join and impersonate users", listener.Addr())
+	}
+	logger.Info("Chat server '%s' listening on %s", chatRoomName, listener.Addr())
 
 	for {
 		conn, err := listener.Accept()
@@ -108,14 +116,40 @@ func handleChatClient(conn net.Conn) {
 		return
 	}
 
-	// Read nickname
-	reader := bufio.NewReader(conn)
-	nickname, err := reader.ReadString('\n')
+	// Optional password gate before the client can speak.
+	if chatAuth != "" {
+		parts := strings.SplitN(chatAuth, ":", 2)
+		if len(parts) != 2 {
+			logger.Error("Invalid --auth format. Use user:pass")
+			return
+		}
+		if _, err := conn.Write([]byte("Password: ")); err != nil {
+			return
+		}
+		if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			return
+		}
+		scanner := bufio.NewScanner(conn)
+		scanner.Buffer(make([]byte, maxChatLine), maxChatLine)
+		if !scanner.Scan() || !checkChatAuth(scanner.Text(), parts[0], parts[1]) {
+			_, _ = conn.Write([]byte("Authentication failed.\n"))
+			logger.Warn("Chat auth failed from %s", conn.RemoteAddr())
+			return
+		}
+		_ = conn.SetReadDeadline(time.Time{})
+	}
+
+	// Per-connection scanner: lines capped at maxChatLine, no cross-call loss.
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, maxChatLine), maxChatLine)
+
+	// Read nickname (bounded, sanitized)
+	nickname, err := readChatLine(conn, scanner)
 	if err != nil {
 		logger.Debug("Failed to read nickname from %s: %v", conn.RemoteAddr(), err)
 		return
 	}
-	nickname = strings.TrimSpace(nickname)
+	nickname = sanitizeNickname(nickname)
 	if nickname == "" {
 		nickname = fmt.Sprintf("Guest-%d", time.Now().Unix()%10000)
 	}
@@ -169,9 +203,9 @@ func handleChatClient(conn net.Conn) {
 		logger.Info("Chat user '%s' left", nickname)
 	}()
 
-	// Handle messages
+	// Handle messages (each line bounded; idle clients time out)
 	for {
-		message, err := reader.ReadString('\n')
+		message, err := readChatLine(conn, scanner)
 		if err != nil {
 			logger.Debug("Chat client %s disconnected: %v", nickname, err)
 			return
@@ -180,6 +214,9 @@ func handleChatClient(conn net.Conn) {
 		message = strings.TrimSpace(message)
 		if message == "" {
 			continue
+		}
+		if len(message) > 2048 {
+			message = message[:2048]
 		}
 
 		// Handle commands
@@ -248,6 +285,7 @@ func broadcastMessage(message string, excludeClientID string) {
 
 	// Send messages without holding the lock
 	for clientID, client := range clients {
+		_ = client.Conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if _, err := client.Conn.Write([]byte(message + "\n")); err != nil {
 			logger.Warn("Failed to send message to client %s: %v", clientID, err)
 			// Remove failed client from the map
@@ -261,4 +299,63 @@ func broadcastMessage(message string, excludeClientID string) {
 			chatMutex.Unlock()
 		}
 	}
+}
+
+// maxChatLine caps a single chat line at 4KB so a client that never sends
+// a newline cannot grow server memory without bound.
+const maxChatLine = 4096
+
+// readChatLine reads one line through the connection scanner with an idle
+// deadline. Overlong lines fail the scan and drop the client.
+func readChatLine(conn net.Conn, scanner *bufio.Scanner) (string, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Minute)); err != nil {
+		return "", err
+	}
+	defer conn.SetReadDeadline(time.Time{})
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("client disconnected")
+	}
+	return strings.TrimSpace(scanner.Text()), nil
+}
+
+// sanitizeNickname keeps printable runes up to 32 chars so nicknames cannot
+// inject terminal escapes or break the user list.
+func sanitizeNickname(nick string) string {
+	var sb strings.Builder
+	for _, r := range nick {
+		if sb.Len() >= 32 {
+			break
+		}
+		if r >= 32 && r != 127 {
+			sb.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// checkChatAuth compares "user:pass" password input in constant time.
+func checkChatAuth(got, user, pass string) bool {
+	u, p, ok := strings.Cut(got, ":")
+	if !ok {
+		// Bare password also accepted when it matches.
+		return subtle.ConstantTimeCompare([]byte(got), []byte(pass)) == 1
+	}
+	if subtle.ConstantTimeCompare([]byte(u), []byte(user)) != 1 {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(p), []byte(pass)) == 1
+}
+
+// isLoopbackAddr reports whether a bind address is loopback-only.
+func isLoopbackAddr(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
