@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/realibrahimsql/Gocat/internal/logger"
 	"github.com/spf13/cobra"
