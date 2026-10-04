@@ -63,6 +63,70 @@ func init() {
 	rootCmd.AddCommand(consoleCmd)
 }
 
+// gocatRCPath returns the console settings file (~/.gocatrc).
+func gocatRCPath() string {
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		return homeDir + "/.gocatrc"
+	}
+	return ""
+}
+
+// loadGocatRC applies persisted KEY=VALUE settings from ~/.gocatrc.
+// Unknown keys are ignored; a missing file is not an error.
+func loadGocatRC() {
+	path := gocatRCPath()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		if _, exists := consoleSettings[key]; exists {
+			consoleSettings[key] = strings.TrimSpace(value)
+		}
+	}
+	applyConsoleSettings()
+}
+
+// saveGocatRC persists current console settings to ~/.gocatrc.
+func saveGocatRC() {
+	path := gocatRCPath()
+	if path == "" {
+		return
+	}
+	keys := settingKeySlice()
+	var sb strings.Builder
+	sb.WriteString("# gocat console settings (written by `set`)\n")
+	for _, k := range keys {
+		sb.WriteString(k + "=" + consoleSettings[k] + "\n")
+	}
+	_ = os.WriteFile(path, []byte(sb.String()), 0o600)
+}
+
+// applyConsoleSettings pushes consoleSettings into live state.
+func applyConsoleSettings() {
+	listenAutoUpgrade = consoleSettings["auto_upgrade"] == "true" ||
+		consoleSettings["auto_upgrade"] == "1" ||
+		consoleSettings["auto_upgrade"] == "yes"
+	if n, err := strconv.Atoi(consoleSettings["maintain"]); err == nil {
+		session.DefaultManager.Maintain = n
+	}
+	if n, err := strconv.Atoi(consoleSettings["max_sessions"]); err == nil {
+		session.DefaultManager.MaxSessions = n
+	}
+}
+
 func consolePrompt() string {
 	count := session.DefaultManager.SessionCount()
 	if count == 0 {
@@ -97,6 +161,8 @@ func runConsole() {
 	listenSessionMode = true
 	listenAutoUpgrade = true
 	listenNoAttach = true
+
+	loadGocatRC()
 
 	// Set default lhost
 	if consoleSettings["lhost"] == "" {
@@ -871,21 +937,10 @@ func consoleSet(args []string) {
 	}
 
 	consoleSettings[key] = value
-	logger.Info("Set %s = %s", key, value)
+	logger.Info("Set %s = %s (saved to ~/.gocatrc)", key, value)
 
-	// Apply side effects
-	switch key {
-	case "auto_upgrade":
-		listenAutoUpgrade = value == "true" || value == "1" || value == "yes"
-	case "maintain":
-		if n, err := strconv.Atoi(value); err == nil {
-			session.DefaultManager.Maintain = n
-		}
-	case "max_sessions":
-		if n, err := strconv.Atoi(value); err == nil {
-			session.DefaultManager.MaxSessions = n
-		}
-	}
+	applyConsoleSettings()
+	saveGocatRC()
 }
 
 func consoleShow(args []string) {

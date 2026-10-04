@@ -1,9 +1,12 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -399,6 +402,67 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// sessionExport is the JSON/CSV projection of a Session.
+type sessionExport struct {
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	IP         string `json:"ip"`
+	Port       int    `json:"port"`
+	OS         string `json:"os"`
+	Type       string `json:"type"`
+	User       string `json:"user"`
+	Hostname   string `json:"hostname"`
+	Source     string `json:"source"`
+	Attached   bool   `json:"attached"`
+	Agent      bool   `json:"agent"`
+	LastActive string `json:"last_active"`
+}
+
+func (m *Manager) exportSessions() []sessionExport {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]sessionExport, 0, len(m.Sessions))
+	for _, sess := range m.Sessions {
+		out = append(out, sessionExport{
+			ID:         sess.ID,
+			Name:       sess.Name,
+			IP:         sess.IP,
+			Port:       sess.Port,
+			OS:         string(sess.OS),
+			Type:       string(sess.Type),
+			User:       sess.User,
+			Hostname:   sess.Hostname,
+			Source:     string(sess.Source),
+			Attached:   sess.IsAttached,
+			Agent:      sess.AgentActive,
+			LastActive: sess.LastActive.Format(time.RFC3339),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// SessionsJSON returns all sessions as indented JSON.
+func (m *Manager) SessionsJSON() string {
+	data, err := json.MarshalIndent(m.exportSessions(), "", "  ")
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+// SessionsCSV returns all sessions as CSV with a header row.
+func (m *Manager) SessionsCSV() string {
+	var sb strings.Builder
+	sb.WriteString("id,name,ip,port,os,type,user,hostname,source,attached,agent,last_active\n")
+	for _, s := range m.exportSessions() {
+		fmt.Fprintf(&sb, "%d,%s,%s,%d,%s,%s,%s,%s,%s,%v,%v,%s\n",
+			s.ID, s.Name, s.IP, s.Port, s.OS, s.Type, s.User,
+			s.Hostname, s.Source, s.Attached, s.Agent, s.LastActive)
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func timeSince(t time.Time) string {

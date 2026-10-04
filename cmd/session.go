@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -69,7 +70,27 @@ var sessionListCmd = &cobra.Command{
 	Aliases: []string{"ls"},
 	Short:   "List all active sessions",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(session.DefaultManager.SessionsTable())
+		asJSON, _ := cmd.Flags().GetBool("json")
+		asCSV, _ := cmd.Flags().GetBool("csv")
+		outFile, _ := cmd.Flags().GetString("output")
+		var out string
+		switch {
+		case asJSON:
+			out = session.DefaultManager.SessionsJSON()
+		case asCSV:
+			out = session.DefaultManager.SessionsCSV()
+		default:
+			out = session.DefaultManager.SessionsTable()
+		}
+		if outFile != "" {
+			if err := os.WriteFile(outFile, []byte(out+"\n"), 0o640); err != nil {
+				logger.Error("Write failed: %v", err)
+				return
+			}
+			logger.Info("Wrote %s", outFile)
+			return
+		}
+		fmt.Println(out)
 	},
 }
 
@@ -407,6 +428,9 @@ func init() {
 
 	sessionAgentCmd.Flags().StringVar(&sessionAgentHost, "host", "", "Local host/IP the target should connect back to")
 	sessionAgentCmd.Flags().IntVar(&sessionAgentPort, "port", 0, "Local port for the reverse agent callback (0 = random)")
+	sessionListCmd.Flags().Bool("json", false, "Output sessions as JSON")
+	sessionListCmd.Flags().Bool("csv", false, "Output sessions as CSV")
+	sessionListCmd.Flags().String("output", "", "Write output to file instead of stdout")
 	sessionPortForwardCmd.Flags().StringVar(&sessionPFBind, "bind", "127.0.0.1", "Local bind address for the forwarded port")
 	sessionPortForwardCmd.Flags().StringVar(&sessionAgentHost, "agent-host", "", "Local host/IP the target should connect back to")
 	sessionPortForwardCmd.Flags().IntVar(&sessionAgentPort, "agent-port", 0, "Local port for the reverse agent callback (0 = random)")
