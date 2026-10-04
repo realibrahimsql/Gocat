@@ -80,14 +80,22 @@ func (m *Manager) InteractSession(id int) error {
 	}()
 
 	buf := make([]byte, 4096)
+	translateCR := sess.Type != ShellPTY
 	for {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
-			data := append([]byte(nil), buf[:n]...)
+			data := translateLineEndings(append([]byte(nil), buf[:n]...), translateCR)
 			if containsDetachSequence(data) {
 				m.DetachSession()
 				fmt.Fprintln(os.Stderr, "\r\n[GoCat] detached.\r")
 				return nil
+			}
+			if translateCR {
+				for i, b := range data {
+					if b == '\r' {
+						data[i] = '\n'
+					}
+				}
 			}
 			if _, sendErr := sess.Send(data); sendErr != nil {
 				m.DetachSession()
@@ -104,7 +112,6 @@ func (m *Manager) InteractSession(id int) error {
 		}
 	}
 }
-
 func containsDetachSequence(data []byte) bool {
 	for _, seq := range detachSequences {
 		if bytes.Contains(data, seq) {
@@ -112,6 +119,22 @@ func containsDetachSequence(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// translateLineEndings maps CR to LF for raw (non-PTY) sessions. A PTY
+// translates CR to LF itself (ICRNL); a raw shell has no line discipline,
+// so an Enter arriving as a lone CR would never terminate the remote
+// command line. PTY input passes through untouched.
+func translateLineEndings(data []byte, translate bool) []byte {
+	if !translate {
+		return data
+	}
+	for i, b := range data {
+		if b == '\r' {
+			data[i] = '\n'
+		}
+	}
+	return data
 }
 
 func sendTerminalSize(sess *Session) {

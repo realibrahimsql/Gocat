@@ -687,8 +687,9 @@ var noisePhrases = []string{
 // above the readline prompt so incoming bytes don't tear the typed line.
 // A trailing partial line (e.g. a shell prompt) passes through untouched.
 type relayWriter struct {
-	ed    *readline.Editor
-	inner io.Writer
+	ed      *readline.Editor
+	inner   io.Writer
+	pending []byte
 }
 
 func (w *relayWriter) Write(p []byte) (int, error) {
@@ -698,10 +699,20 @@ func (w *relayWriter) Write(p []byte) (int, error) {
 		}
 		return len(p), nil
 	}
-	clean := dropNoiseLines(p)
-	if len(clean) > 0 {
-		w.ed.PrintAbove(string(clean))
+	w.pending = append(w.pending, p...)
+	for {
+		i := bytes.IndexByte(w.pending, '\n')
+		if i < 0 {
+			break
+		}
+		line := append([]byte(nil), w.pending[:i+1]...)
+		w.pending = append([]byte(nil), w.pending[i+1:]...)
+		if clean := dropNoiseLines(line); len(clean) > 0 {
+			w.ed.SetRemotePrefix("")
+			w.ed.PrintAbove(string(clean))
+		}
 	}
+	w.ed.SetRemotePrefix(string(w.pending))
 	return len(p), nil
 }
 

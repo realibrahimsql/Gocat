@@ -37,6 +37,7 @@ type Editor struct {
 	reader         *bufio.Reader
 	history        []string
 	prompt         string
+	remotePrefix   string
 	historyIndex   int
 	currentLine    []rune
 	cursorPos      int
@@ -343,6 +344,21 @@ func (e *Editor) PrintAbove(s string) {
 	e.refreshLine()
 }
 
+// SetRemotePrefix sets a prefix rendered before the prompt on the same
+// line (e.g. a remote shell prompt without trailing newline). Complete
+// output lines still go above via PrintAbove; only the trailing fragment
+// stays inline so typed input follows the prompt instead of dropping
+// underneath it.
+func (e *Editor) SetRemotePrefix(s string) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return
+	}
+	e.outMu.Lock()
+	e.remotePrefix = s
+	e.outMu.Unlock()
+	e.refreshLine()
+}
+
 // AddHistoryEntry adds a command to history with deduplication
 func (e *Editor) AddHistoryEntry(entry string) {
 	entry = strings.TrimSpace(entry)
@@ -473,7 +489,10 @@ func (e *Editor) refreshLine() {
 	defer e.outMu.Unlock()
 	// Clear current line
 	fmt.Print("\r\033[K")
-	// Redraw prompt and line
+	// Redraw remote prefix (e.g. shell prompt fragment), prompt and line
+	if e.remotePrefix != "" {
+		fmt.Print(e.remotePrefix)
+	}
 	prompt := e.processPrompt(e.prompt)
 	e.displayPromptLocked(prompt)
 
