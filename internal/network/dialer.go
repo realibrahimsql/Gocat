@@ -306,7 +306,6 @@ func (d *Dialer) dialOnce(ctx context.Context, host string, port int) (Connectio
 	dialer := &net.Dialer{
 		Timeout:   d.config.ConnectionTimeout,
 		KeepAlive: d.config.KeepAlive,
-		DualStack: d.config.DualStack,
 	}
 
 	var conn net.Conn

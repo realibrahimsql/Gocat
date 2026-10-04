@@ -677,8 +677,27 @@ func (s *Session) BuildName() {
 	if hostname != "" {
 		sep = "~"
 	}
-	s.Name = fmt.Sprintf("%s%s%s-%s", hostname, sep, ip, system)
+	s.Name = fmt.Sprintf("%s%s%s-%s", sanitizeNamePart(hostname), sep, ip, sanitizeNamePart(system))
 	s.NameColored = fmt.Sprintf("%s %s %s", hostname, ip, system)
+}
+
+// sanitizeNamePart strips anything outside a safe set from target-supplied
+// strings used in local paths, so a hostile hostname cannot escape the
+// session directory.
+func sanitizeNamePart(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('_')
+		}
+	}
+	out := sb.String()
+	if out == "" || out == "." || out == ".." {
+		return "unknown"
+	}
+	return out
 }
 
 // NewStreamID allocates a new stream ID
@@ -719,6 +738,7 @@ const (
 	MsgResize byte = 2
 	MsgExec   byte = 3
 	MsgStream byte = 4
+	MsgHello  byte = 5
 )
 
 // NewMessenger creates a new Messenger
@@ -833,6 +853,7 @@ func (s *Session) uploadUnix(localPath string, remotePath string) (string, error
 	if err != nil {
 		return "", err
 	}
+	sourceName = sanitizeRemoteName(sourceName)
 
 	// Base64 encode and upload in chunks
 	encoded := encodeBase64(data)
@@ -883,6 +904,7 @@ func (s *Session) uploadWindows(localPath string, remotePath string) (string, er
 	if err != nil {
 		return "", err
 	}
+	sourceName = sanitizeRemoteName(sourceName)
 
 	dest := remotePath
 	if dest == "" {
@@ -890,6 +912,9 @@ func (s *Session) uploadWindows(localPath string, remotePath string) (string, er
 		if dest == "" {
 			dest = `%TEMP%`
 		}
+	}
+	if !validWindowsPath(dest) {
+		return "", fmt.Errorf("remote path contains cmd metacharacters: %q", dest)
 	}
 
 	remoteFile := remoteJoin(s.OS, dest, sourceName)
@@ -1047,7 +1072,7 @@ func readSourceData(source string) ([]byte, string, error) {
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			return nil, "", fmt.Errorf("failed to download %s: HTTP %s", source, resp.Status)
 		}
-		data, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 200<<20))
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to read %s: %w", source, err)
 		}
@@ -1091,6 +1116,39 @@ func ShellQuote(s string) string {
 
 func escapePowerShellSingleQuoted(s string) string {
 	return strings.ReplaceAll(s, `'`, `''`)
+}
+
+// validWindowsPath rejects cmd.exe metacharacters in operator-supplied
+// remote paths. Double quotes cannot be escaped reliably for cmd.exe, so
+// anything outside a conservative set is refused outright.
+func validWindowsPath(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < 32 || r == 127 {
+			return false
+		}
+	}
+	return !strings.ContainsAny(s, "\"&|<>()^%!`$")
+}
+
+// sanitizeRemoteName replaces characters hostile to remote shells with '_'
+// so URL basenames and local filenames are safe to interpolate (quoted).
+func sanitizeRemoteName(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		if r < 32 || r == 127 || strings.ContainsRune("\"&|<>()^%!`$';", r) {
+			sb.WriteRune('_')
+		} else {
+			sb.WriteRune(r)
+		}
+	}
+	out := sb.String()
+	if out == "" || out == "." || out == ".." {
+		return "file"
+	}
+	return out
 }
 
 // Ensure Session implements io.ReadWriteCloser

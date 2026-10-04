@@ -285,9 +285,24 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// Start server
 	addr := fmt.Sprintf("%s:%d", fs.Host, fs.Port)
+	if (fs.Host == "0.0.0.0" || fs.Host == "::") && fs.Auth == "" {
+		logger.Warn("Serving on all interfaces without auth; prefer --host 127.0.0.1 or --auth user:pass")
+	}
+	if serveUpload && fs.Auth == "" {
+		logger.Warn("Uploads enabled without auth: anyone who can reach %s can write files", addr)
+	}
 	logger.Info("Starting file server on %s", addr)
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		logger.Fatal("Server error: %v", err)
 	}
 }
@@ -307,6 +322,8 @@ func sanitizeUploadFilename(name string) string {
 }
 
 func handleUpload(w http.ResponseWriter, r *http.Request, uploadDir string) {
+	// Cap upload bodies: 100MB shared with the multipart path below.
+	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
 	if r.Method == "PUT" {
 		// Handle PUT upload
 		filename := sanitizeUploadFilename(r.URL.Query().Get("filename"))
@@ -333,8 +350,8 @@ func handleUpload(w http.ResponseWriter, r *http.Request, uploadDir string) {
 		return
 	}
 
-	// Handle multipart POST upload
-	r.ParseMultipartForm(100 << 20) // 100MB max
+	// Handle multipart POST upload (body already capped above; keep 10MB in RAM)
+	r.ParseMultipartForm(10 << 20)
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "Failed to read upload", http.StatusBadRequest)

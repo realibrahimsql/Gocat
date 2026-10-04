@@ -573,7 +573,6 @@ func GetSecureTLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion:               tls.VersionTLS12, // Minimum TLS 1.2
 		MaxVersion:               tls.VersionTLS13, // Allow TLS 1.3
-		PreferServerCipherSuites: true,
 		InsecureSkipVerify:       false,                      // Always verify certificates by default
 		NextProtos:               []string{"h2", "http/1.1"}, // Support HTTP/2
 		CipherSuites: []uint16{
