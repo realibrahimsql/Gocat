@@ -29,7 +29,12 @@ func RegisterFileModule(L *lua.LState) {
 
 // luaFileRead implements file.read(path)
 func luaFileRead(L *lua.LState) int {
-	path := L.ToString(1)
+	path, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("path escapes sandbox"))
+		return 2
+	}
 
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -45,10 +50,15 @@ func luaFileRead(L *lua.LState) int {
 
 // luaFileWrite implements file.write(path, content)
 func luaFileWrite(L *lua.LState) int {
-	path := L.ToString(1)
+	path, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("path escapes sandbox"))
+		return 2
+	}
 	content := L.ToString(2)
 
-	err := os.WriteFile(path, []byte(content), 0644)
+	err := os.WriteFile(path, []byte(content), 0600)
 	if err != nil {
 		L.Push(lua.LBool(false))
 		L.Push(lua.LString(err.Error()))
@@ -62,10 +72,15 @@ func luaFileWrite(L *lua.LState) int {
 
 // luaFileAppend implements file.append(path, content)
 func luaFileAppend(L *lua.LState) int {
-	path := L.ToString(1)
+	path, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("path escapes sandbox"))
+		return 2
+	}
 	content := L.ToString(2)
 
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		L.Push(lua.LBool(false))
 		L.Push(lua.LString(err.Error()))
@@ -87,7 +102,11 @@ func luaFileAppend(L *lua.LState) int {
 
 // luaFileExists implements file.exists(path)
 func luaFileExists(L *lua.LState) int {
-	path := L.ToString(1)
+	path, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LBool(false))
+		return 1
+	}
 
 	_, err := os.Stat(path)
 	exists := err == nil
@@ -98,7 +117,12 @@ func luaFileExists(L *lua.LState) int {
 
 // luaFileDelete implements file.delete(path)
 func luaFileDelete(L *lua.LState) int {
-	path := L.ToString(1)
+	path, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("path escapes sandbox"))
+		return 2
+	}
 
 	err := os.Remove(path)
 	if err != nil {
@@ -114,8 +138,18 @@ func luaFileDelete(L *lua.LState) int {
 
 // luaFileCopy implements file.copy(src, dst)
 func luaFileCopy(L *lua.LState) int {
-	src := L.ToString(1)
-	dst := L.ToString(2)
+	src, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("source escapes sandbox"))
+		return 2
+	}
+	dst, ok := guardedPath(L, 2)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("destination escapes sandbox"))
+		return 2
+	}
 
 	sourceFile, err := os.Open(src)
 	if err != nil {
@@ -147,8 +181,18 @@ func luaFileCopy(L *lua.LState) int {
 
 // luaFileMove implements file.move(src, dst)
 func luaFileMove(L *lua.LState) int {
-	src := L.ToString(1)
-	dst := L.ToString(2)
+	src, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("source escapes sandbox"))
+		return 2
+	}
+	dst, ok := guardedPath(L, 2)
+	if !ok {
+		L.Push(lua.LBool(false))
+		L.Push(lua.LString("destination escapes sandbox"))
+		return 2
+	}
 
 	err := os.Rename(src, dst)
 	if err != nil {
@@ -164,7 +208,12 @@ func luaFileMove(L *lua.LState) int {
 
 // luaFileStat implements file.stat(path)
 func luaFileStat(L *lua.LState) int {
-	path := L.ToString(1)
+	path, ok := guardedPath(L, 1)
+	if !ok {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("path escapes sandbox"))
+		return 2
+	}
 
 	info, err := os.Stat(path)
 	if err != nil {

@@ -106,6 +106,11 @@ func luaGenerateKey(L *lua.LState) int {
 	if length <= 0 {
 		length = 32
 	}
+	if length > 256 {
+		L.Push(lua.LString(""))
+		L.Push(lua.LString("key length capped at 256 bytes"))
+		return 2
+	}
 
 	key := make([]byte, length)
 	_, err := rand.Read(key)

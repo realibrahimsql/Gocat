@@ -38,7 +38,11 @@ func luaJSONEncode(L *lua.LState) int {
 // luaJSONDecode implements json.decode(jsonString)
 func luaJSONDecode(L *lua.LState) int {
 	jsonStr := L.ToString(1)
-
+	if len(jsonStr) > 1<<20 {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("input capped at 1MB"))
+		return 2
+	}
 	var data interface{}
 	err := json.Unmarshal([]byte(jsonStr), &data)
 	if err != nil {

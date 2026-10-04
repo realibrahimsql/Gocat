@@ -25,21 +25,48 @@ func RegisterHTTPModule(L *lua.LState) {
 	L.SetGlobal("http", httpModule)
 }
 
-// luaHTTPGet implements http.get(url)
-func luaHTTPGet(L *lua.LState) int {
-	url := L.ToString(1)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+// scriptHTTPDo validates the URL, performs the request with redirect
+// re-validation, and returns a capped body.
+func scriptHTTPDo(g *ScriptGuard, method, rawurl string, body io.Reader, headers map[string]string) (*http.Response, []byte, error) {
+	u, err := validateScriptURL(g, rawurl)
 	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
+		return nil, nil, err
+	}
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return fmt.Errorf("too many redirects")
+			}
+			if _, err := validateScriptURL(g, req.URL.String()); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequest(method, u.String(), body)
+	if err != nil {
+		return nil, nil, err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxScriptBody+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(data) > maxScriptBody {
+		return nil, nil, fmt.Errorf("response exceeds %d bytes", maxScriptBody)
+	}
+	return resp, data, nil
+}
 
-	body, _ := io.ReadAll(resp.Body)
-
+func pushScriptResponse(L *lua.LState, resp *http.Response, body []byte) {
 	result := L.NewTable()
 	result.RawSetString("status", lua.LNumber(resp.StatusCode))
 	result.RawSetString("body", lua.LString(string(body)))
@@ -52,146 +79,127 @@ func luaHTTPGet(L *lua.LState) int {
 
 	L.Push(result)
 	L.Push(lua.LNil)
+}
+
+// luaHTTPGet implements http.get(url)
+func luaHTTPGet(L *lua.LState) int {
+	g := GetGuard(L)
+	url := L.ToString(1)
+
+	resp, body, err := scriptHTTPDo(g, http.MethodGet, url, nil, nil)
+	if err != nil {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("request failed"))
+		return 2
+	}
+	pushScriptResponse(L, resp, body)
 	return 2
 }
 
 // luaHTTPPost implements http.post(url, data)
 func luaHTTPPost(L *lua.LState) int {
+	g := GetGuard(L)
 	url := L.ToString(1)
 	data := L.ToString(2)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Post(url, "application/x-www-form-urlencoded", strings.NewReader(data))
-	if err != nil {
+	if len(data) > maxScriptBody {
 		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request body too large"))
 		return 2
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-
-	result := L.NewTable()
-	result.RawSetString("status", lua.LNumber(resp.StatusCode))
-	result.RawSetString("body", lua.LString(string(body)))
-
-	L.Push(result)
-	L.Push(lua.LNil)
+	resp, body, err := scriptHTTPDo(g, http.MethodPost, url, strings.NewReader(data),
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	if err != nil {
+		L.Push(lua.LNil)
+		L.Push(lua.LString("request failed"))
+		return 2
+	}
+	pushScriptResponse(L, resp, body)
 	return 2
 }
 
 // luaHTTPPut implements http.put(url, data)
 func luaHTTPPut(L *lua.LState) int {
+	g := GetGuard(L)
 	url := L.ToString(1)
 	data := L.ToString(2)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(data))
-	if err != nil {
+	if len(data) > maxScriptBody {
 		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request body too large"))
 		return 2
 	}
 
-	resp, err := client.Do(req)
+	resp, body, err := scriptHTTPDo(g, http.MethodPut, url, strings.NewReader(data), nil)
 	if err != nil {
 		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request failed"))
 		return 2
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	result := L.NewTable()
-	result.RawSetString("status", lua.LNumber(resp.StatusCode))
-	result.RawSetString("body", lua.LString(string(body)))
-
-	L.Push(result)
-	L.Push(lua.LNil)
+	pushScriptResponse(L, resp, body)
 	return 2
 }
 
 // luaHTTPDelete implements http.delete(url)
 func luaHTTPDelete(L *lua.LState) int {
+	g := GetGuard(L)
 	url := L.ToString(1)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	resp, body, err := scriptHTTPDo(g, http.MethodDelete, url, nil, nil)
 	if err != nil {
 		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request failed"))
 		return 2
 	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
-		return 2
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	result := L.NewTable()
-	result.RawSetString("status", lua.LNumber(resp.StatusCode))
-	result.RawSetString("body", lua.LString(string(body)))
-
-	L.Push(result)
-	L.Push(lua.LNil)
+	pushScriptResponse(L, resp, body)
 	return 2
 }
 
 // luaHTTPRequest implements http.request(method, url, headers, body)
 func luaHTTPRequest(L *lua.LState) int {
+	g := GetGuard(L)
 	method := L.ToString(1)
 	url := L.ToString(2)
 	headersTable := L.ToTable(3)
 	body := L.ToString(4)
-
-	req, err := http.NewRequest(method, url, strings.NewReader(body))
-	if err != nil {
+	if len(body) > maxScriptBody {
 		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request body too large"))
 		return 2
 	}
 
-	// Set headers
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch, http.MethodHead:
+	default:
+		L.Push(lua.LNil)
+		L.Push(lua.LString("method not allowed"))
+		return 2
+	}
+
+	headers := map[string]string{}
 	if headersTable != nil {
 		headersTable.ForEach(func(key, value lua.LValue) {
-			req.Header.Set(key.String(), value.String())
+			k := http.CanonicalHeaderKey(key.String())
+			switch k {
+			case "Host", "Content-Length", "Authorization", "Proxy-Authorization", "Cookie":
+				return
+			}
+			headers[k] = value.String()
 		})
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, respBody, err := scriptHTTPDo(g, method, url, strings.NewReader(body), headers)
 	if err != nil {
 		L.Push(lua.LNil)
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request failed"))
 		return 2
 	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	result := L.NewTable()
-	result.RawSetString("status", lua.LNumber(resp.StatusCode))
-	result.RawSetString("body", lua.LString(string(respBody)))
-
-	headers := L.NewTable()
-	for key, values := range resp.Header {
-		headers.RawSetString(key, lua.LString(strings.Join(values, ", ")))
-	}
-	result.RawSetString("headers", headers)
-
-	L.Push(result)
-	L.Push(lua.LNil)
+	pushScriptResponse(L, resp, respBody)
 	return 2
 }
 
 // luaHTTPDownload implements http.download(url, filepath)
 func luaHTTPDownload(L *lua.LState) int {
+	g := GetGuard(L)
 	url := L.ToString(1)
 	filepath := L.ToString(2)
 
@@ -200,20 +208,27 @@ func luaHTTPDownload(L *lua.LState) int {
 		L.Push(lua.LString("filepath is required"))
 		return 2
 	}
+	if g != nil && g.Restricted {
+		var err error
+		filepath, err = resolveSandboxPath(g, filepath)
+		if err != nil {
+			L.Push(lua.LBool(false))
+			L.Push(lua.LString("path escapes sandbox"))
+			return 2
+		}
+	}
 
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Get(url)
+	resp, body, err := scriptHTTPDo(g, http.MethodGet, url, nil, nil)
 	if err != nil {
 		L.Push(lua.LBool(false))
-		L.Push(lua.LString(err.Error()))
+		L.Push(lua.LString("request failed"))
 		return 2
 	}
-	defer resp.Body.Close()
 
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		L.Push(lua.LBool(false))
-		L.Push(lua.LString(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)))
+		L.Push(lua.LString(fmt.Sprintf("HTTP %d", resp.StatusCode)))
 		return 2
 	}
 
@@ -221,16 +236,16 @@ func luaHTTPDownload(L *lua.LState) int {
 	out, err := os.Create(filepath)
 	if err != nil {
 		L.Push(lua.LBool(false))
-		L.Push(lua.LString(fmt.Sprintf("failed to create file: %v", err)))
+		L.Push(lua.LString("failed to create file"))
 		return 2
 	}
 	defer out.Close()
 
 	// Write the response body to file
-	written, err := io.Copy(out, resp.Body)
+	written, err := out.Write(body)
 	if err != nil {
 		L.Push(lua.LBool(false))
-		L.Push(lua.LString(fmt.Sprintf("failed to write file: %v", err)))
+		L.Push(lua.LString("failed to write file"))
 		return 2
 	}
 

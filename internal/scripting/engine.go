@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/realibrahimsql/Gocat/internal/logger"
@@ -36,7 +37,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		MaxExecutionTime: 30 * time.Second,
 		MaxMemory:        64 * 1024 * 1024, // 64MB
-		RestrictedMode:   false,
+		RestrictedMode:   true,
 		Debug:            false,
 	}
 }
@@ -48,7 +49,13 @@ func NewEngine(config *Config) *Engine {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	L := lua.NewState()
+	var L *lua.LState
+	if config.RestrictedMode {
+		L = lua.NewState(lua.Options{SkipOpenLibs: true})
+		openRestrictedLibs(L)
+	} else {
+		L = lua.NewState()
+	}
 
 	// Configure Lua state limits
 	L.SetMx(int(config.MaxMemory))
@@ -67,9 +74,45 @@ func NewEngine(config *Config) *Engine {
 	return engine
 }
 
+// openRestrictedLibs opens only the Lua standard libraries that cannot
+// escape the sandbox: no os/io/package/debug. Dangerous base functions
+// (dofile, loadfile, load, loadstring, require) are removed after opening.
+func openRestrictedLibs(L *lua.LState) {
+	for _, lib := range []struct {
+		name string
+		fn   lua.LGFunction
+	}{
+		{lua.TabLibName, lua.OpenTable},
+		{lua.StringLibName, lua.OpenString},
+		{lua.MathLibName, lua.OpenMath},
+		{lua.CoroutineLibName, lua.OpenCoroutine},
+		{lua.ChannelLibName, lua.OpenChannel},
+	} {
+		L.Push(L.NewFunction(lib.fn))
+		L.Push(lua.LString(lib.name))
+		L.Call(1, 0)
+	}
+	// Base last so its globals exist for stripping.
+	L.Push(L.NewFunction(lua.OpenBase))
+	L.Push(lua.LString(lua.BaseLibName))
+	L.Call(1, 0)
+	for _, dangerous := range []string{
+		"dofile", "loadfile", "load", "loadstring", "require",
+		"collectgarbage", "newproxy",
+	} {
+		L.SetGlobal(dangerous, lua.LNil)
+	}
+}
+
 // registerModules registers all Lua modules
 func (e *Engine) registerModules() {
 	// Core modules
+	modules.SetGuard(e.L, &modules.ScriptGuard{
+		Restricted:   e.config.RestrictedMode,
+		SandboxRoot:  e.sandboxRoot(),
+		AllowedHosts: e.config.AllowedHosts,
+		DeniedHosts:  e.config.DeniedHosts,
+	})
 	modules.RegisterNetworkModule(e.L, e.config.RestrictedMode)
 	modules.RegisterHTTPModule(e.L)
 	modules.RegisterCryptoModule(e.L)
@@ -112,6 +155,20 @@ func (e *Engine) registerGoCatInfo() {
 	gocatTable.RawSetString("config", configTable)
 
 	e.L.SetGlobal("gocat", gocatTable)
+}
+
+// sandboxRoot resolves the file sandbox: ModulesPath when configured,
+// otherwise the process working directory at engine creation.
+func (e *Engine) sandboxRoot() string {
+	if e.config.ModulesPath != "" {
+		if abs, err := filepath.Abs(e.config.ModulesPath); err == nil {
+			return abs
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return ""
 }
 
 // SetArgs sets command line arguments for the script
@@ -179,6 +236,10 @@ func (e *Engine) LoadScript(scriptPath string) error {
 func (e *Engine) LoadString(code string) error {
 	if e.L == nil {
 		return fmt.Errorf("lua engine is closed")
+	}
+
+	if len(code) > 10*1024*1024 {
+		return fmt.Errorf("script exceeds 10MB size cap")
 	}
 
 	if err := e.L.DoString(code); err != nil {
@@ -283,6 +344,7 @@ func (e *Engine) Close() {
 	}
 
 	if e.L != nil {
+		modules.ClearGuard(e.L)
 		e.L.Close()
 		e.L = nil
 	}

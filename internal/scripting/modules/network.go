@@ -202,6 +202,11 @@ func luaReceive(L *lua.LState) int {
 	if size <= 0 {
 		size = 2048
 	}
+	if size > 1<<20 {
+		L.Push(lua.LString(""))
+		L.Push(lua.LString("receive size capped at 1MB"))
+		return 2
+	}
 
 	buffer := make([]byte, size)
 	n, err := conn.Read(buffer)

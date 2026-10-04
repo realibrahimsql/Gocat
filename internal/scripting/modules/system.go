@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -22,7 +23,9 @@ func RegisterSystemModule(L *lua.LState, restrictedMode bool) {
 	// File system operations
 	L.SetField(sysModule, "ls", L.NewFunction(luaLS))
 	L.SetField(sysModule, "mkdir", L.NewFunction(luaMkdir))
-	L.SetField(sysModule, "cd", L.NewFunction(luaCD))
+	if !restrictedMode {
+		L.SetField(sysModule, "cd", L.NewFunction(luaCD))
+	}
 
 	// Command execution (restricted)
 	if !restrictedMode {
@@ -53,9 +56,14 @@ func luaPlatform(L *lua.LState) int {
 	return 1
 }
 
-// luaEnv implements sys.env(name)
+// luaEnv implements sys.env(name). Unrestricted in full mode; restricted
+// mode only exposes GOCAT_* variables so scripts cannot harvest host secrets.
 func luaEnv(L *lua.LState) int {
 	name := L.ToString(1)
+	if sysRestricted(L) && !strings.HasPrefix(name, "GOCAT_") {
+		L.Push(lua.LString(""))
+		return 1
+	}
 	value := os.Getenv(name)
 	L.Push(lua.LString(value))
 	return 1

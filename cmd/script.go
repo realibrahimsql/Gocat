@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/realibrahimsql/Gocat/internal/logger"
 	"github.com/realibrahimsql/Gocat/internal/scripting"
@@ -119,6 +120,19 @@ func runScript(cmd *cobra.Command, args []string) {
 
 	// Create Lua engine with default config
 	config := scripting.DefaultConfig()
+	if unrestrict, _ := cmd.Flags().GetBool("unrestricted"); unrestrict {
+		config.RestrictedMode = false
+		logger.Warn("Running script unrestricted: sys.exec, full stdlib, and host filesystem are available to the script")
+	}
+	if secs, _ := cmd.Flags().GetInt("timeout"); secs != 0 {
+		if secs < 1 {
+			secs = 1
+		}
+		if secs > 300 {
+			secs = 300
+		}
+		config.MaxExecutionTime = time.Duration(secs) * time.Second
+	}
 	engine := scripting.NewEngine(config)
 	if engine == nil {
 		logger.Error("Failed to create Lua engine")
@@ -442,7 +456,8 @@ func init() {
 	// Add flags
 	scriptRunCmd.Flags().StringP("args", "a", "", "Arguments to pass to the script")
 	scriptRunCmd.Flags().BoolP("verbose", "v", false, "Verbose script execution")
-	scriptRunCmd.Flags().Int("timeout", 0, "Script execution timeout in seconds")
+	scriptRunCmd.Flags().Int("timeout", 0, "Script execution timeout in seconds (1-300, default 30)")
+	scriptRunCmd.Flags().Bool("unrestricted", false, "Disable the Lua sandbox (sys.exec, os/io, full filesystem)")
 
 	scriptListCmd.Flags().Bool("detailed", false, "Show detailed information")
 

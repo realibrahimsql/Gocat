@@ -23,6 +23,7 @@ var (
 	proxyHealthCheck     string
 	proxyTimeout         time.Duration
 	proxyMaxConns        int
+	proxyMaxBody         int64
 	proxyModifyHeader    bool
 	proxyLogRequests     bool
 	proxySSL             bool
@@ -93,6 +94,7 @@ func init() {
 	proxyCmd.Flags().StringVar(&proxyHealthCheck, "health-check", "", "Health check path (e.g., /health)")
 	proxyCmd.Flags().DurationVar(&proxyTimeout, "timeout", 2*time.Second, "Backend timeout")
 	proxyCmd.Flags().IntVar(&proxyMaxConns, "max-connections", 1000, "Maximum concurrent connections")
+	proxyCmd.Flags().Int64Var(&proxyMaxBody, "max-body", 10<<20, "Maximum proxied request body in bytes (0 = unlimited)")
 	proxyCmd.Flags().BoolVar(&proxyModifyHeader, "modify-headers", false, "Add X-Forwarded-* headers")
 	proxyCmd.Flags().BoolVar(&proxyLogRequests, "log-requests", true, "Log all requests")
 	proxyCmd.Flags().BoolVar(&proxySSL, "ssl", false, "Enable SSL/TLS")
@@ -169,6 +171,10 @@ func runProxy(cmd *cobra.Command, args []string) {
 			}).DialContext,
 		},
 	}
+	if proxyInsecureBackend {
+		handler.transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		logger.Warn("--insecure-backend: backend TLS certificates are NOT verified")
+	}
 
 	// Create HTTP server
 	server := &http.Server{
@@ -222,6 +228,12 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&proxyStats.TotalRequests, 1)
 	atomic.AddInt64(&proxyStats.ActiveRequests, 1)
 	defer atomic.AddInt64(&proxyStats.ActiveRequests, -1)
+
+	// Cap proxied request bodies (default 10MB) so one client cannot tie
+	// up a backend connection indefinitely.
+	if proxyMaxBody > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, proxyMaxBody)
+	}
 
 	// Log request
 	if proxyLogRequests {
