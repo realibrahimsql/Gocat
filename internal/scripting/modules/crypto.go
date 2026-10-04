@@ -32,6 +32,21 @@ func RegisterCryptoModule(L *lua.LState) {
 	L.SetGlobal("crypto", cryptoModule)
 }
 
+// GlobalAliases returns bare-global encoding helpers for backward
+// compatibility with scripts written against the legacy flat API
+// (hex_encode, base64_encode, ...). Pure functions, sandbox-safe.
+func GlobalAliases() map[string]lua.LGFunction {
+	return map[string]lua.LGFunction{
+		"md5":           luaMD5,
+		"sha1":          luaSHA1,
+		"sha256":        luaSHA256,
+		"base64_encode": luaBase64Encode,
+		"base64_decode": luaBase64Decode,
+		"hex_encode":    luaHexEncode,
+		"hex_decode":    luaHexDecode,
+	}
+}
+
 // luaMD5 implements crypto.md5(data)
 func luaMD5(L *lua.LState) int {
 	data := L.ToString(1)

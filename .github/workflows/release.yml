@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip
+          sudo apt-get install -y zip rpm
 
       - name: Run release build
         run: |
@@ -47,6 +47,9 @@ jobs:
             release/*.tar.gz
             release/*.zip
             release/*.deb
+            release/*.rpm
+            release/*.dmg
+            release/*.pkg
             dist/SHA256SUMS
             dist/MD5SUMS
             dist/SBOM.modules.json
@@ -63,3 +66,38 @@ jobs:
           path: |
             release/*
             dist/*
+
+  macos-packages:
+    needs: [build-and-release]
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build DMG and PKG
+        run: |
+          chmod +x scripts/build-macos-pkgs.sh
+          ./scripts/build-macos-pkgs.sh ${{ steps.version.outputs.VERSION }}
+
+      - name: Append macOS packages to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.dmg
+            release/*.pkg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

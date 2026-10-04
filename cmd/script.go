@@ -274,6 +274,9 @@ func validateScript(cmd *cobra.Command, args []string) {
 
 	// Create Lua engine for validation
 	config := scripting.DefaultConfig()
+	// Validation runs the operator's own file locally for QA: lift the
+	// sandbox so network scripts validate the same way they run.
+	config.RestrictedMode = false
 	engine := scripting.NewEngine(config)
 	if engine == nil {
 		logger.Error("Failed to create Lua engine")

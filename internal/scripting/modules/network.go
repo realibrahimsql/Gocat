@@ -50,6 +50,32 @@ func RegisterNetworkModule(L *lua.LState, restrictedMode bool) {
 	L.SetGlobal("net", netModule)
 }
 
+// NetworkAliases returns bare-global network helpers for backward
+// compatibility with scripts written against the legacy flat API
+// (connect, send, receive, close, listen). Same restrictions apply.
+func NetworkAliases(restricted bool) map[string]lua.LGFunction {
+	disabled := func(what string) lua.LGFunction {
+		return func(L *lua.LState) int {
+			L.Push(lua.LNil)
+			L.Push(lua.LString(what + " disabled in restricted mode"))
+			return 2
+		}
+	}
+	m := map[string]lua.LGFunction{
+		"send":    luaSend,
+		"receive": luaReceive,
+		"close":   luaClose,
+	}
+	if restricted {
+		m["connect"] = disabled("connect")
+		m["listen"] = disabled("listen")
+	} else {
+		m["connect"] = func(L *lua.LState) int { return luaConnect(L, false) }
+		m["listen"] = luaListen
+	}
+	return m
+}
+
 // luaConnect implements net.connect(host, port, protocol)
 func luaConnect(L *lua.LState, restrictedMode bool) int {
 	if restrictedMode {

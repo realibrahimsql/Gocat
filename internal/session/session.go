@@ -540,13 +540,15 @@ func (s *Session) GetUser() string {
 	if s.OS == OSUnix {
 		resp, err := s.Exec(`echo "$(id -un)($(id -u))"`, 3*time.Second)
 		if err == nil {
-			s.User = resp
-			return resp
+			// Target-supplied: strip terminal escapes so a hostile shell
+			// cannot spoof operator output or forge log lines.
+			s.User = stripTerminalEscapes(strings.TrimSpace(resp))
+			return s.User
 		}
 	} else if s.OS == OSWindows {
 		resp, err := s.Exec("whoami", 3*time.Second)
 		if err == nil {
-			s.User = strings.TrimSpace(resp)
+			s.User = stripTerminalEscapes(strings.TrimSpace(resp))
 			return s.User
 		}
 	}
@@ -679,6 +681,20 @@ func (s *Session) BuildName() {
 	}
 	s.Name = fmt.Sprintf("%s%s%s-%s", sanitizeNamePart(hostname), sep, ip, sanitizeNamePart(system))
 	s.NameColored = fmt.Sprintf("%s %s %s", hostname, ip, system)
+}
+
+// stripTerminalEscapes removes ANSI escapes and control characters from
+// target-supplied strings displayed to the operator or written to logs.
+func stripTerminalEscapes(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		if r == '\n' || r == '\t' {
+			sb.WriteRune(r)
+		} else if r >= 32 && r != 127 {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }
 
 // sanitizeNamePart strips anything outside a safe set from target-supplied

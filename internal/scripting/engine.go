@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/realibrahimsql/Gocat/internal/logger"
@@ -102,6 +103,43 @@ func openRestrictedLibs(L *lua.LState) {
 	} {
 		L.SetGlobal(dangerous, lua.LNil)
 	}
+	// Safe read-only os subset: scripts legitimately use os.time/date/clock.
+	// Everything else (execute, getenv, remove, rename, exit, setlocale)
+	// stays unavailable in restricted mode.
+	L.SetGlobal("os", restrictedOSTable(L))
+}
+
+// restrictedOSTable builds a minimal os table with time functions only.
+func restrictedOSTable(L *lua.LState) *lua.LTable {
+	t := L.NewTable()
+	L.SetField(t, "time", L.NewFunction(func(L *lua.LState) int {
+		L.Push(lua.LNumber(time.Now().Unix()))
+		return 1
+	}))
+	L.SetField(t, "clock", L.NewFunction(func(L *lua.LState) int {
+		L.Push(lua.LNumber(float64(time.Now().UnixNano()) / 1e9))
+		return 1
+	}))
+	L.SetField(t, "date", L.NewFunction(func(L *lua.LState) int {
+		format := L.OptString(1, "%c")
+		L.Push(lua.LString(time.Now().Format(luaDateFormat(format))))
+		return 1
+	}))
+	L.SetField(t, "difftime", L.NewFunction(func(L *lua.LState) int {
+		L.Push(lua.LNumber(float64(L.ToInt64(1) - L.ToInt64(2))))
+		return 1
+	}))
+	return t
+}
+
+// luaDateFormat converts a few common strftime verbs to Go layouts.
+func luaDateFormat(format string) string {
+	r := strings.NewReplacer(
+		"%Y", "2006", "%m", "01", "%d", "02",
+		"%H", "15", "%M", "04", "%S", "05",
+		"%c", time.ANSIC,
+	)
+	return r.Replace(format)
 }
 
 // registerModules registers all Lua modules
@@ -139,6 +177,14 @@ func (e *Engine) registerUtilityFunctions() {
 	e.L.SetGlobal("log", e.L.NewFunction(modules.LuaLog))
 	e.L.SetGlobal("sleep", e.L.NewFunction(modules.LuaSleep))
 	e.L.SetGlobal("print", e.L.NewFunction(modules.LuaPrint))
+	// Legacy flat crypto helpers (hex_encode, base64_encode, ...)
+	for name, fn := range modules.GlobalAliases() {
+		e.L.SetGlobal(name, e.L.NewFunction(fn))
+	}
+	// Legacy flat network helpers (connect, send, receive, close, listen)
+	for name, fn := range modules.NetworkAliases(e.config.RestrictedMode) {
+		e.L.SetGlobal(name, e.L.NewFunction(fn))
+	}
 }
 
 // registerGoCatInfo registers GoCat environment information
@@ -218,8 +264,9 @@ func (e *Engine) LoadScript(scriptPath string) error {
 		return fmt.Errorf("failed to read script file: %w", err)
 	}
 
-	// Compile and load script
-	if err := e.L.DoString(string(content)); err != nil {
+	// Compile and load script with an execution deadline so a hostile
+	// top-level loop cannot hang the loader forever.
+	if err := e.doStringTimeout(string(content)); err != nil {
 		return fmt.Errorf("failed to load script: %w", err)
 	}
 
@@ -242,11 +289,26 @@ func (e *Engine) LoadString(code string) error {
 		return fmt.Errorf("script exceeds 10MB size cap")
 	}
 
-	if err := e.L.DoString(code); err != nil {
+	if err := e.doStringTimeout(code); err != nil {
 		return fmt.Errorf("failed to execute code: %w", err)
 	}
 
 	return nil
+}
+
+// doStringTimeout runs Lua code with the configured execution deadline.
+// gopher-lua aborts the VM when the context expires, so infinite loops in
+// untrusted scripts terminate instead of hanging the process.
+func (e *Engine) doStringTimeout(code string) error {
+	timeout := e.config.MaxExecutionTime
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, timeout)
+	defer cancel()
+	e.L.SetContext(ctx)
+	defer e.L.RemoveContext()
+	return e.L.DoString(code)
 }
 
 // ExecuteFunction executes a specific function in the loaded script
